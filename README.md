@@ -45,35 +45,110 @@ Agent                         Broker                          User (Browser)
 ### Key Properties
 
 - **Zero Knowledge** — Broker stores only ciphertext encrypted with the agent's public key (Note: for OAuth flows, the broker acts as a confidential client and briefly handles tokens before encryption — see [concept.md](concept.md) for details)
-- **No Callback Needed** — URL + Code UX, no web server required on agent side
+- **No Callback Required** — URL + Code UX with polling; optional callback URL for agents that have an endpoint
 - **Universal** — Works for OAuth tokens, API keys, passwords, certificates
 - **Agent-Agnostic** — CLI, Telegram bot, web app, cron job, Docker container — all work
 - **Decoupled** — Agent and user don't need to share a runtime, machine, or network
 
 ## Quick Start
 
-### Python SDK
+LinkAuth is language-agnostic — any HTTP client works. No SDK required.
 
-```python
-from linkauth import BrokerClient
+### 1. Create a Session
 
-broker = BrokerClient(url="https://broker.example.com/v1")
-
-# Request credentials — returns URL + code for the user
-session = broker.request_credential(
-    credential_type="api_key",
-    service="openai",
-    display_name="OpenAI API Key",
-)
-
-# Show to user (via LLM, console, Telegram, etc.)
-print(f"Please open {session.url} and verify code {session.code}")
-
-# Wait until user completes (blocking, with timeout)
-credentials = session.wait(timeout=300)
-
-print(credentials["api_key"])
+```bash
+curl -X POST https://broker.example.com/v1/sessions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "public_key": "<base64-encoded RSA public key>",
+    "template": "openai",
+    "callback_url": "https://my-agent.example.com/credentials/ready"
+  }'
 ```
+
+Response:
+```json
+{
+  "session_id": "a1b2c3d4...",
+  "code": "ABCD-1234",
+  "url": "https://broker.example.com/connect/ABCD-1234",
+  "poll_token": "pt_...",
+  "expires_at": "2026-03-18T12:15:00Z"
+}
+```
+
+### 2. User Opens URL, Enters Credentials
+
+The frontend renders the form based on the template — the user sees labeled input fields, enters their data, and the browser encrypts everything client-side before submitting.
+
+### 3. Retrieve Result (Polling or Callback)
+
+**Option A — Polling:**
+```bash
+curl https://broker.example.com/v1/sessions/a1b2c3d4... \
+  -H "Authorization: Bearer pt_..."
+```
+
+**Option B — Callback:**
+If `callback_url` was provided, the broker sends a POST to that URL when the session completes:
+```json
+{
+  "session_id": "a1b2c3d4...",
+  "status": "ready",
+  "ciphertext": "<base64-encoded encrypted payload>"
+}
+```
+
+## Credential Templates
+
+Templates define which fields the frontend collects from the user. LinkAuth ships with built-in templates for common services and supports fully custom schemas.
+
+### Built-in Templates
+
+| Template | Fields | Use Case |
+|----------|--------|----------|
+| `openai` | `api_key` | OpenAI API access |
+| `anthropic` | `api_key` | Anthropic API access |
+| `aws` | `access_key_id`, `secret_access_key`, `region` | AWS programmatic access |
+| `basic_auth` | `username`, `password` | Generic login credentials |
+| `api_key` | `api_key` | Generic single API key |
+| `oauth` | *(handled via OAuth flow)* | Google, GitHub, Slack, etc. |
+
+Usage with a built-in template:
+```json
+{ "template": "openai", "public_key": "..." }
+```
+
+### Custom Schemas
+
+For anything not covered by a built-in template, define fields inline:
+
+```json
+{
+  "public_key": "...",
+  "template": "custom",
+  "display_name": "ACME Corp Login",
+  "fields": [
+    { "name": "company_id",  "label": "Company ID",        "type": "text",     "required": true },
+    { "name": "user_id",     "label": "User ID",           "type": "text",     "required": true },
+    { "name": "password",    "label": "Password",          "type": "password", "required": true },
+    { "name": "auth_code",   "label": "2FA Code (if any)", "type": "text",     "required": false }
+  ]
+}
+```
+
+The frontend dynamically renders the form based on `fields`. Supported field types: `text`, `password`, `textarea`, `select`.
+
+### Template Registry (Future)
+
+Agents will be able to register reusable custom templates on the broker:
+
+```
+PUT /v1/templates/acme_login
+{ "display_name": "ACME Corp Login", "fields": [...] }
+```
+
+Then use them like built-in templates: `{ "template": "acme_login" }`
 
 ## Encryption
 
@@ -102,43 +177,108 @@ This allows arbitrarily large payloads (OAuth tokens, certificates, etc.) while 
 
 For the full security architecture and threat model, see [concept.md](concept.md).
 
+## Standards Compliance
+
+LinkAuth is built on established IETF standards:
+
+| Standard | Role in LinkAuth |
+|----------|-----------------|
+| [RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628) — OAuth 2.0 Device Authorization Grant | Core inspiration for the URL + Code + Polling UX |
+| [RFC 6749](https://datatracker.ietf.org/doc/html/rfc6749) / [RFC 6750](https://datatracker.ietf.org/doc/html/rfc6750) — OAuth 2.0 Framework & Bearer Tokens | Foundation for OAuth credential flows |
+| [RFC 8017](https://datatracker.ietf.org/doc/html/rfc8017) — PKCS #1 (RSA-OAEP) | Asymmetric encryption for key wrapping |
+| [RFC 5116](https://datatracker.ietf.org/doc/html/rfc5116) — AES-GCM Authenticated Encryption | Symmetric encryption for credential payloads |
+| [RFC 8446](https://datatracker.ietf.org/doc/html/rfc8446) / [RFC 9325](https://datatracker.ietf.org/doc/html/rfc9325) — TLS 1.3 & Best Practices | Mandatory transport security (TLS 1.2+) |
+| [RFC 9700](https://datatracker.ietf.org/doc/rfc9700/) — OAuth 2.0 Security Best Current Practice | Security baseline for all OAuth interactions |
+| [RFC 7636](https://datatracker.ietf.org/doc/html/rfc7636) — PKCE | Anti-interception for OAuth code exchanges |
+| [RFC 9449](https://datatracker.ietf.org/doc/html/rfc9449) — DPoP (Proof of Possession) | Future: bind tokens to agent's keypair |
+| [RFC 7517](https://datatracker.ietf.org/doc/html/rfc7517) / [RFC 7516](https://datatracker.ietf.org/doc/html/rfc7516) — JWK & JWE | Public key representation & encrypted token format |
+| [RFC 9457](https://datatracker.ietf.org/doc/html/rfc9457) — Problem Details for HTTP APIs | Structured API error responses |
+| [RFC 6585](https://datatracker.ietf.org/doc/html/rfc6585) — HTTP 429 Too Many Requests | Polling rate control (per RFC 8628 `slow_down`) |
+
+### Emerging IETF Drafts (AI Agent Authorization)
+
+The IETF is actively working on standards for AI agent authentication — LinkAuth aligns with these emerging specifications:
+
+- **draft-oauth-ai-agents-on-behalf-of-user** — OAuth 2.0 Extension for AI agent delegation
+- **draft-rosenberg-oauth-aauth** — AAuth: Agentic Authorization OAuth 2.1 Extension
+- **draft-klrc-aiagent-auth** — AI Agent Authentication and Authorization
+- **draft-ietf-httpapi-ratelimit-headers** — Standardized RateLimit headers for HTTP APIs
+
 ## Architecture
 
 ```
 linkauth/
-├── broker/                    # Backend API (FastAPI + SQLite)
+├── broker/                    # Backend API (FastAPI)
 │   ├── api.py                # REST endpoints
-│   ├── models.py             # Database models
-│   ├── crypto.py             # Encryption helpers
+│   ├── models.py             # Domain models (dataclasses, not ORM-bound)
+│   ├── dao/                  # Data Access Object layer
+│   │   ├── base.py           # Abstract DAO interfaces (SessionDAO, TemplateDAO)
+│   │   ├── sqlite.py         # SQLite implementation (MVP default)
+│   │   └── postgres.py       # PostgreSQL implementation (SaaS / multi-tenant)
+│   ├── crypto.py             # Encryption helpers (server-side, for OAuth token encryption)
 │   ├── oauth.py              # OAuth flow handler
-│   └── config.py             # Provider configuration
+│   ├── templates.py          # Built-in credential templates + custom schema validation
+│   ├── callback.py           # Outbound callback delivery
+│   └── config.py             # Provider, template & DAO configuration
 ├── frontend/                  # Browser UI (Vanilla JS + Web Crypto API)
-│   ├── index.html            # Connect page
+│   ├── index.html            # Connect page (dynamic form rendering from template)
 │   ├── crypto.js             # Hybrid encryption (RSA-OAEP + AES-256-GCM)
 │   └── oauth.html            # OAuth redirect handler
-├── sdk/                       # Agent SDKs
-│   └── python/
-│       └── linkauth/
-│           ├── client.py     # BrokerClient
-│           ├── provider.py   # CredentialProvider integration
-│           └── crypto.py     # Local decryption
 ├── docker-compose.yml
 └── Dockerfile
+```
+
+### DAO Pattern
+
+The data layer uses the **Data Access Object** pattern — all storage operations go through abstract interfaces, so the backing store can be swapped without touching business logic.
+
+```
+┌─────────────┐      ┌──────────────┐      ┌─────────────────┐
+│   API Layer │─────→│   DAO Iface  │←─────│  SQLite (MVP)   │
+│  (api.py)   │      │  (base.py)   │←─────│  PostgreSQL     │
+│             │      │              │←─────│  DynamoDB       │
+└─────────────┘      └──────────────┘      │  Redis          │
+                                           │  ...            │
+                                           └─────────────────┘
+```
+
+The DAO backend is selected via configuration:
+
+```yaml
+# config.yaml
+storage:
+  backend: "sqlite"               # or "postgres", "dynamodb", ...
+  sqlite:
+    path: "./data/broker.db"
+  postgres:
+    dsn: "postgresql://user:pass@host/linkauth"
 ```
 
 ## Deployment
 
 ```bash
-# Self-hosted (Docker)
 docker run -p 8080:8080 \
   -e DATABASE_URL=sqlite:///data/broker.db \
   -v broker-data:/data \
   ghcr.io/linkauth/linkauth
-
-# Embedded (local development)
-from linkauth import EmbeddedBroker
-broker = EmbeddedBroker(port=8080)
 ```
+
+## IETF Standardization
+
+LinkAuth is not just a product — it aims to contribute to the emerging standards for AI agent authorization.
+
+### Our Roadmap
+
+1. **Participate** — Join the [OAuth Working Group](https://datatracker.ietf.org/wg/oauth/about/) mailing list and contribute to the active AI agent authorization drafts (draft-oauth-ai-agents-on-behalf-of-user, draft-rosenberg-oauth-aauth, draft-klrc-aiagent-auth)
+2. **Demonstrate** — Present LinkAuth as running code at an [IETF Hackathon](https://www.ietf.org/how/runningcode/hackathons/) (held at every IETF meeting, remote participation possible)
+3. **Formalize** — Submit an Internet-Draft: *"Zero-Knowledge Credential Brokering for Autonomous Agents"*, formalizing the LinkAuth protocol as an interoperable specification
+4. **Standardize** — Work toward WG adoption within the OAuth or GNAP working groups
+
+The IETF values *running code and rough consensus* ([RFC 7282](https://datatracker.ietf.org/doc/html/rfc7282)). A working implementation with an SDK is the strongest argument for a protocol proposal.
+
+### Why This Matters
+
+The AI agent ecosystem currently lacks a standard for credential delegation. Multiple independent drafts are being proposed simultaneously — this is the right moment to contribute a battle-tested approach. LinkAuth's zero-knowledge architecture and device-flow UX offer a unique perspective that complements the existing proposals.
 
 ## Status
 
