@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full bg-gray-50">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LinkAuth — Connect</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: { 50: '#eff6ff', 100: '#dbeafe', 500: '#3b82f6', 600: '#2563eb', 700: '#1d4ed8' }
+          }
+        }
+      }
+    }
+  </script>
+  <script src="/static/crypto.js"></script>
+</head>
+<body class="h-full flex items-center justify-center p-4">
+
+  <!-- Loading state -->
+  <div id="view-loading" class="text-center">
+    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-600 mx-auto"></div>
+    <p class="mt-4 text-gray-500 text-sm">Loading session...</p>
+  </div>
+
+  <!-- Error state -->
+  <div id="view-error" class="hidden text-center max-w-sm">
+    <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-red-100">
+      <svg class="h-6 w-6 text-red-600" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
+      </svg>
+    </div>
+    <h2 class="mt-4 text-lg font-semibold text-gray-900">Session Not Found</h2>
+    <p id="error-message" class="mt-2 text-sm text-gray-500">This session has expired or does not exist.</p>
+  </div>
+
+  <!-- Step 1: Confirm code -->
+  <div id="view-confirm" class="hidden w-full max-w-md">
+    <div class="bg-white shadow-lg rounded-2xl p-8">
+      <!-- Header -->
+      <div class="text-center mb-8">
+        <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-brand-100 mb-4">
+          <svg class="h-6 w-6 text-brand-600" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M13.19 8.688a4.5 4.5 0 0 1 1.242 7.244l-4.5 4.5a4.5 4.5 0 0 1-6.364-6.364l1.757-1.757m13.35-.622 1.757-1.757a4.5 4.5 0 0 0-6.364-6.364l-4.5 4.5a4.5 4.5 0 0 0 1.242 7.244" />
+          </svg>
+        </div>
+        <h1 class="text-xl font-bold text-gray-900">Connect to <span id="confirm-service" class="text-brand-600"></span></h1>
+        <p class="mt-2 text-sm text-gray-500">Verify this code matches what your agent displayed</p>
+      </div>
+
+      <!-- Code display -->
+      <div class="bg-gray-50 rounded-xl p-6 text-center mb-8">
+        <p class="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Confirmation Code</p>
+        <p id="confirm-code" class="text-4xl font-mono font-bold text-gray-900 tracking-widest"></p>
+      </div>
+
+      <!-- Confirm button -->
+      <button
+        id="btn-confirm"
+        onclick="confirmCode()"
+        class="w-full rounded-xl bg-brand-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-600 focus:ring-offset-2 transition-colors"
+      >
+        I Confirm — This Code Matches
+      </button>
+
+      <p class="mt-4 text-center text-xs text-gray-400">
+        If this code does not match, close this window immediately.
+      </p>
+    </div>
+  </div>
+
+  <!-- Step 2: Credential form -->
+  <div id="view-credentials" class="hidden w-full max-w-md">
+    <div class="bg-white shadow-lg rounded-2xl p-8">
+      <!-- Header -->
+      <div class="text-center mb-8">
+        <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-green-100 mb-4">
+          <svg class="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+          </svg>
+        </div>
+        <h1 class="text-xl font-bold text-gray-900">Connect to <span id="cred-service" class="text-brand-600"></span></h1>
+        <p class="mt-1 text-sm text-green-600 font-medium">Code verified</p>
+      </div>
+
+      <!-- Dynamic form -->
+      <form id="credential-form" class="space-y-5" onsubmit="submitCredentials(event)">
+        <div id="fields-container"></div>
+
+        <button
+          type="submit"
+          id="btn-submit"
+          class="w-full rounded-xl bg-brand-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-600 focus:ring-offset-2 transition-colors"
+        >
+          Connect
+        </button>
+      </form>
+
+      <p class="mt-4 text-center text-xs text-gray-400">
+        Your credentials are encrypted in this browser before being sent. The broker never sees them in plaintext.
+      </p>
+    </div>
+  </div>
+
+  <!-- Step 3: Success -->
+  <div id="view-success" class="hidden text-center max-w-sm">
+    <div class="bg-white shadow-lg rounded-2xl p-8">
+      <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-green-100 mb-4">
+        <svg class="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+        </svg>
+      </div>
+      <h2 class="text-lg font-semibold text-gray-900">Connected!</h2>
+      <p class="mt-2 text-sm text-gray-500">Your credentials have been securely transmitted. You can close this window.</p>
+    </div>
+  </div>
+
+<script>
+  // ---------------------------------------------------------------------------
+  // State
+  // ---------------------------------------------------------------------------
+  const API_BASE = window.location.origin + "/v1";
+  let sessionData = null;  // { status, display_name, code, fields, public_key }
+  let sessionCode = null;
+
+  // ---------------------------------------------------------------------------
+  // Views
+  // ---------------------------------------------------------------------------
+  function showView(id) {
+    for (const v of ["view-loading", "view-error", "view-confirm", "view-credentials", "view-success"]) {
+      document.getElementById(v).classList.toggle("hidden", v !== id);
+    }
+  }
+
+  function showError(msg) {
+    document.getElementById("error-message").textContent = msg;
+    showView("view-error");
+  }
+
+  // ---------------------------------------------------------------------------
+  // Init — extract code from URL path: /connect/ABCD-1234
+  // ---------------------------------------------------------------------------
+  async function init() {
+    const path = window.location.pathname;
+    const match = path.match(/\/connect\/([A-Z0-9]+-[A-Z0-9]+)/i);
+    if (!match) {
+      showError("Invalid link. No session code found in URL.");
+      return;
+    }
+    sessionCode = match[1];
+
+    try {
+      const resp = await fetch(`${API_BASE}/connect/${sessionCode}`);
+      if (!resp.ok) {
+        const err = await resp.json().catch(() => ({}));
+        showError(err.detail || "Session not found or expired.");
+        return;
+      }
+      sessionData = await resp.json();
+
+      if (sessionData.status === "confirmed") {
+        renderCredentialForm();
+        showView("view-credentials");
+      } else {
+        document.getElementById("confirm-service").textContent = sessionData.display_name;
+        document.getElementById("confirm-code").textContent = sessionData.code;
+        showView("view-confirm");
+      }
+    } catch (e) {
+      showError("Could not connect to the broker. Please try again.");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Step 1: Confirm code
+  // ---------------------------------------------------------------------------
+  async function confirmCode() {
+    const btn = document.getElementById("btn-confirm");
+    btn.disabled = true;
+    btn.textContent = "Confirming...";
+
+    try {
+      const resp = await fetch(`${API_BASE}/connect/${sessionCode}/confirm`, { method: "POST" });
+      if (!resp.ok && resp.status !== 204) {
+        const err = await resp.json().catch(() => ({}));
+        showError(err.detail || "Failed to confirm code.");
+        return;
+      }
+      renderCredentialForm();
+      showView("view-credentials");
+    } catch (e) {
+      showError("Connection error. Please try again.");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Step 2: Render dynamic credential form
+  // ---------------------------------------------------------------------------
+  function renderCredentialForm() {
+    document.getElementById("cred-service").textContent = sessionData.display_name;
+    const container = document.getElementById("fields-container");
+    container.innerHTML = "";
+
+    for (const field of sessionData.fields) {
+      const wrapper = document.createElement("div");
+
+      const label = document.createElement("label");
+      label.className = "block text-sm font-medium text-gray-700 mb-1";
+      label.textContent = field.label;
+      label.setAttribute("for", `field-${field.name}`);
+
+      let input;
+      if (field.type === "textarea") {
+        input = document.createElement("textarea");
+        input.rows = 3;
+      } else if (field.type === "select" && field.options) {
+        input = document.createElement("select");
+        for (const opt of field.options) {
+          const option = document.createElement("option");
+          option.value = opt;
+          option.textContent = opt;
+          input.appendChild(option);
+        }
+      } else {
+        input = document.createElement("input");
+        input.type = field.type === "password" ? "password" : "text";
+      }
+
+      input.id = `field-${field.name}`;
+      input.name = field.name;
+      input.required = field.required;
+      input.className = "block w-full rounded-lg border border-gray-300 px-3 py-2.5 text-sm text-gray-900 shadow-sm placeholder:text-gray-400 focus:border-brand-500 focus:ring-1 focus:ring-brand-500 transition-colors";
+
+      if (field.type === "password") {
+        input.placeholder = "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022";
+      }
+
+      wrapper.appendChild(label);
+      wrapper.appendChild(input);
+      container.appendChild(wrapper);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Step 2: Submit encrypted credentials
+  // ---------------------------------------------------------------------------
+  async function submitCredentials(e) {
+    e.preventDefault();
+    const btn = document.getElementById("btn-submit");
+    btn.disabled = true;
+    btn.textContent = "Encrypting & sending...";
+
+    try {
+      // Collect form values
+      const credentials = {};
+      for (const field of sessionData.fields) {
+        const input = document.getElementById(`field-${field.name}`);
+        credentials[field.name] = input.value;
+      }
+
+      // Encrypt client-side
+      const ciphertext = await encryptCredentials(sessionData.public_key, credentials);
+
+      // Submit to broker
+      const resp = await fetch(`${API_BASE}/connect/${sessionCode}/complete`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ciphertext: ciphertext,
+          algorithm: "RSA-OAEP-256+AES-256-GCM",
+        }),
+      });
+
+      if (!resp.ok && resp.status !== 204) {
+        const err = await resp.json().catch(() => ({}));
+        showError(err.detail || "Failed to submit credentials.");
+        return;
+      }
+
+      showView("view-success");
+    } catch (e) {
+      btn.disabled = false;
+      btn.textContent = "Connect";
+      showError("Encryption or submission failed. Please try again.");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Boot
+  // ---------------------------------------------------------------------------
+  init();
+</script>
+
+</body>
+</html>

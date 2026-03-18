@@ -8,16 +8,16 @@ AI agents need credentials (OAuth tokens, API keys, passwords) to access externa
 
 ```
 Agent                         Broker                          User (Browser)
-──────                        ──────                          ──────────────
+------                        ------                          --------------
 1. Generate RSA keypair
    (private key stays local)
 
 2. POST /sessions
    { public_key, type, meta }
-         ───────────────→     3. Create session
+         --------------->     3. Create session
                                  code = "ABCD-1234"
                                  session_id = SHA256(code)
-                              ←── { code, url, poll_token }
+                              <-- { code, url, poll_token }
 
 4. Show URL + code to user
    (via LLM, console, chat)
@@ -31,33 +31,114 @@ Agent                         Broker                          User (Browser)
                                                                  agent's public_key
                                                                  (Hybrid: RSA-OAEP + AES-256-GCM)
 
-                              8. Store ciphertext           ←── POST /sessions/:id/complete
+                              8. Store ciphertext           <-- POST /sessions/:id/complete
                                  status = "ready"
 
 9. Poll: GET /sessions/:id
    Authorization: Bearer <poll_token>
-         ───────────────→     10. Return { ciphertext }
+         --------------->     10. Return { ciphertext }
 
 11. Decrypt locally
-    → plaintext credentials
+    -> plaintext credentials
 ```
 
 ### Key Properties
 
-- **Zero Knowledge** — Broker stores only ciphertext encrypted with the agent's public key (Note: for OAuth flows, the broker acts as a confidential client and briefly handles tokens before encryption — see [concept.md](concept.md) for details)
-- **No Callback Required** — URL + Code UX with polling; optional callback URL for agents that have an endpoint
-- **Universal** — Works for OAuth tokens, API keys, passwords, certificates
-- **Agent-Agnostic** — CLI, Telegram bot, web app, cron job, Docker container — all work
-- **Decoupled** — Agent and user don't need to share a runtime, machine, or network
+- **Zero Knowledge** -- Broker stores only ciphertext encrypted with the agent's public key (Note: for OAuth flows, the broker acts as a confidential client and briefly handles tokens before encryption -- see [concept.md](concept.md) for details)
+- **No Callback Required** -- URL + Code UX with polling; optional callback URL for agents that have an endpoint
+- **Universal** -- Works for OAuth tokens, API keys, passwords, certificates
+- **Agent-Agnostic** -- CLI, Telegram bot, web app, cron job, Docker container -- all work
+- **Decoupled** -- Agent and user don't need to share a runtime, machine, or network
 
-## Quick Start
+## Quick Start -- Try It Yourself
 
-LinkAuth is language-agnostic — any HTTP client works. No SDK required.
+Experience the full flow in under 2 minutes. The included agent simulation uses a mock LLM but the credential flow is **100% real**.
 
-### 1. Create a Session
+### Prerequisites
+
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/) (recommended) or pip
+
+### 1. Install & Start the Broker
 
 ```bash
-curl -X POST https://broker.example.com/v1/sessions \
+git clone https://github.com/your-org/linkauth.git
+cd linkauth
+uv sync --all-extras
+
+# Start the broker (Terminal 1)
+$env:PYTHONPATH="src"; python -m uvicorn broker.main:app --port 8080   # PowerShell
+PYTHONPATH=src python -m uvicorn broker.main:app --port 8080           # Bash/Linux/Mac
+```
+
+The broker is now running at `http://localhost:8080` ([Swagger UI](http://localhost:8080/docs)).
+
+### 2. Run the Agent Simulation
+
+```bash
+# In a second terminal
+python examples/agent_simulation.py
+```
+
+### 3. Walk Through the Flow
+
+Type anything -- the mock LLM pretends you asked for your emails and calls the `imap_read` tool:
+
+```
+You: Show me my last 5 emails
+
++- DriverResponse ------------------------------------------------+
+| call_executed=True  call_failed=False                           |
+| tool: imap_read(count=5)  action: calling                       |
++-----------------------------------------------------------------+
+
+Assistant: I need authentication to access your emails.
+          Please open this link:
+
+          -> http://localhost:8080/connect/ABCD-1234
+
+          and confirm the code ABCD-1234.
+```
+
+Now open the link in your browser:
+
+1. **Step 1** -- You see the confirmation code `ABCD-1234`. Verify it matches what the agent displayed and click "I Confirm".
+2. **Step 2** -- Enter any credentials (e.g. username + password). The browser encrypts them client-side before submitting.
+
+Back in the terminal, type anything again:
+
+```
+You: Ok done, fetch my emails now
+
++-----------------------------------------------------------------+
+| call_executed=True  call_failed=False                           |
+| tool: imap_read(count=5)  action: retrying                      |
++-----------------------------------------------------------------+
+Assistant: Here are your last 5 emails (Account: you@example.com):
+
+ #  Date         From                     Subject
+ 1  2026-03-18   alice@example.com        Meeting tomorrow at 10am
+ 2  2026-03-17   bob@corp.de              Invoice #4521 attached
+ 3  2026-03-17   newsletter@dev.to        Top 10 Python tips this week
+ 4  2026-03-16   charlie@startup.io       Re: API integration questions
+ 5  2026-03-15   hr@company.com           Updated vacation policy
+
++-----------------------------------------------------------------+
+| Roundtrip complete!                                             |
+| The broker never saw your credentials in plaintext.             |
++-----------------------------------------------------------------+
+```
+
+The broker stored only ciphertext. Your credentials were encrypted in the browser and decrypted by the agent.
+
+## API Reference
+
+LinkAuth is language-agnostic -- any HTTP client works. No SDK required.
+
+### Create a Session
+
+```bash
+curl -X POST http://localhost:8080/v1/sessions \
   -H "Content-Type: application/json" \
   -d '{
     "public_key": "<base64-encoded RSA public key>",
@@ -71,26 +152,22 @@ Response:
 {
   "session_id": "a1b2c3d4...",
   "code": "ABCD-1234",
-  "url": "https://broker.example.com/connect/ABCD-1234",
+  "url": "http://localhost:8080/connect/ABCD-1234",
   "poll_token": "pt_...",
   "expires_at": "2026-03-18T12:15:00Z"
 }
 ```
 
-### 2. User Opens URL, Enters Credentials
+### Retrieve Result (Polling or Callback)
 
-The frontend renders the form based on the template — the user sees labeled input fields, enters their data, and the browser encrypts everything client-side before submitting.
-
-### 3. Retrieve Result (Polling or Callback)
-
-**Option A — Polling:**
+**Option A -- Polling:**
 ```bash
-curl https://broker.example.com/v1/sessions/a1b2c3d4... \
+curl http://localhost:8080/v1/sessions/a1b2c3d4... \
   -H "Authorization: Bearer pt_..."
 ```
 
-**Option B — Callback:**
-If `callback_url` was provided, the broker sends a POST to that URL when the session completes:
+**Option B -- Callback:**
+If `callback_url` was provided, the broker POSTs to that URL when the session completes:
 ```json
 {
   "session_id": "a1b2c3d4...",
@@ -112,7 +189,6 @@ Templates define which fields the frontend collects from the user. LinkAuth ship
 | `aws` | `access_key_id`, `secret_access_key`, `region` | AWS programmatic access |
 | `basic_auth` | `username`, `password` | Generic login credentials |
 | `api_key` | `api_key` | Generic single API key |
-| `oauth` | *(handled via OAuth flow)* | Google, GitHub, Slack, etc. |
 
 Usage with a built-in template:
 ```json
@@ -139,17 +215,6 @@ For anything not covered by a built-in template, define fields inline:
 
 The frontend dynamically renders the form based on `fields`. Supported field types: `text`, `password`, `textarea`, `select`.
 
-### Template Registry (Future)
-
-Agents will be able to register reusable custom templates on the broker:
-
-```
-PUT /v1/templates/acme_login
-{ "display_name": "ACME Corp Login", "fields": [...] }
-```
-
-Then use them like built-in templates: `{ "template": "acme_login" }`
-
 ## Encryption
 
 LinkAuth uses **Hybrid Encryption** to avoid RSA-OAEP payload size limits:
@@ -168,12 +233,12 @@ This allows arbitrarily large payloads (OAuth tokens, certificates, etc.) while 
 |----------|---------------|
 | Broker never sees plaintext | Encryption happens client-side in the browser via Web Crypto API |
 | Database breach is useless | Stored ciphertext requires agent's private key to decrypt |
-| Sessions expire | TTL of 5–15 minutes, auto-cleanup |
+| Sessions expire | TTL of 5-15 minutes, auto-cleanup |
 | One-time use | Credentials retrieved once, then deleted |
 | Polling is authenticated | `poll_token` required to retrieve session results |
 | Rate-limited | Session creation is rate-limited per IP / API key |
 
-> **OAuth Caveat:** When the broker handles OAuth flows (Google, GitHub, etc.), it acts as the OAuth confidential client. The broker briefly sees the OAuth tokens in memory before encrypting them. This is an inherent limitation of OAuth — the broker is trusted for OAuth flows but zero-knowledge for direct credential input.
+> **OAuth Caveat:** When the broker handles OAuth flows (Google, GitHub, etc.), it acts as the OAuth confidential client. The broker briefly sees the OAuth tokens in memory before encrypting them. This is an inherent limitation of OAuth -- the broker is trusted for OAuth flows but zero-knowledge for direct credential input.
 
 For the full security architecture and threat model, see [concept.md](concept.md).
 
@@ -183,102 +248,83 @@ LinkAuth is built on established IETF standards:
 
 | Standard | Role in LinkAuth |
 |----------|-----------------|
-| [RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628) — OAuth 2.0 Device Authorization Grant | Core inspiration for the URL + Code + Polling UX |
-| [RFC 6749](https://datatracker.ietf.org/doc/html/rfc6749) / [RFC 6750](https://datatracker.ietf.org/doc/html/rfc6750) — OAuth 2.0 Framework & Bearer Tokens | Foundation for OAuth credential flows |
-| [RFC 8017](https://datatracker.ietf.org/doc/html/rfc8017) — PKCS #1 (RSA-OAEP) | Asymmetric encryption for key wrapping |
-| [RFC 5116](https://datatracker.ietf.org/doc/html/rfc5116) — AES-GCM Authenticated Encryption | Symmetric encryption for credential payloads |
-| [RFC 8446](https://datatracker.ietf.org/doc/html/rfc8446) / [RFC 9325](https://datatracker.ietf.org/doc/html/rfc9325) — TLS 1.3 & Best Practices | Mandatory transport security (TLS 1.2+) |
-| [RFC 9700](https://datatracker.ietf.org/doc/rfc9700/) — OAuth 2.0 Security Best Current Practice | Security baseline for all OAuth interactions |
-| [RFC 7636](https://datatracker.ietf.org/doc/html/rfc7636) — PKCE | Anti-interception for OAuth code exchanges |
-| [RFC 9449](https://datatracker.ietf.org/doc/html/rfc9449) — DPoP (Proof of Possession) | Future: bind tokens to agent's keypair |
-| [RFC 7517](https://datatracker.ietf.org/doc/html/rfc7517) / [RFC 7516](https://datatracker.ietf.org/doc/html/rfc7516) — JWK & JWE | Public key representation & encrypted token format |
-| [RFC 9457](https://datatracker.ietf.org/doc/html/rfc9457) — Problem Details for HTTP APIs | Structured API error responses |
-| [RFC 6585](https://datatracker.ietf.org/doc/html/rfc6585) — HTTP 429 Too Many Requests | Polling rate control (per RFC 8628 `slow_down`) |
+| [RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628) -- OAuth 2.0 Device Authorization Grant | Core inspiration for the URL + Code + Polling UX |
+| [RFC 8017](https://datatracker.ietf.org/doc/html/rfc8017) -- PKCS #1 (RSA-OAEP) | Asymmetric encryption for key wrapping |
+| [RFC 5116](https://datatracker.ietf.org/doc/html/rfc5116) -- AES-GCM Authenticated Encryption | Symmetric encryption for credential payloads |
+| [RFC 8446](https://datatracker.ietf.org/doc/html/rfc8446) -- TLS 1.3 | Mandatory transport security |
+| [RFC 9457](https://datatracker.ietf.org/doc/html/rfc9457) -- Problem Details for HTTP APIs | Structured API error responses |
 
 ### Emerging IETF Drafts (AI Agent Authorization)
 
-The IETF is actively working on standards for AI agent authentication — LinkAuth aligns with these emerging specifications:
+The IETF is actively working on standards for AI agent authentication -- LinkAuth aligns with these emerging specifications:
 
-- **draft-oauth-ai-agents-on-behalf-of-user** — OAuth 2.0 Extension for AI agent delegation
-- **draft-rosenberg-oauth-aauth** — AAuth: Agentic Authorization OAuth 2.1 Extension
-- **draft-klrc-aiagent-auth** — AI Agent Authentication and Authorization
-- **draft-ietf-httpapi-ratelimit-headers** — Standardized RateLimit headers for HTTP APIs
+- **draft-oauth-ai-agents-on-behalf-of-user** -- OAuth 2.0 Extension for AI agent delegation
+- **draft-rosenberg-oauth-aauth** -- AAuth: Agentic Authorization OAuth 2.1 Extension
+- **draft-klrc-aiagent-auth** -- AI Agent Authentication and Authorization
 
 ## Architecture
 
 ```
-linkauth/
-├── broker/                    # Backend API (FastAPI)
-│   ├── api.py                # REST endpoints
-│   ├── models.py             # Domain models (dataclasses, not ORM-bound)
-│   ├── dao/                  # Data Access Object layer
-│   │   ├── base.py           # Abstract DAO interfaces (SessionDAO, TemplateDAO)
-│   │   ├── sqlite.py         # SQLite implementation (MVP default)
-│   │   └── postgres.py       # PostgreSQL implementation (SaaS / multi-tenant)
-│   ├── crypto.py             # Encryption helpers (server-side, for OAuth token encryption)
-│   ├── oauth.py              # OAuth flow handler
-│   ├── templates.py          # Built-in credential templates + custom schema validation
-│   ├── callback.py           # Outbound callback delivery
-│   └── config.py             # Provider, template & DAO configuration
-├── frontend/                  # Browser UI (Vanilla JS + Web Crypto API)
-│   ├── index.html            # Connect page (dynamic form rendering from template)
-│   ├── crypto.js             # Hybrid encryption (RSA-OAEP + AES-256-GCM)
-│   └── oauth.html            # OAuth redirect handler
-├── docker-compose.yml
-└── Dockerfile
+src/
++-- broker/                    # Backend API (FastAPI)
+|   +-- main.py               # App entry point + lifespan
+|   +-- api.py                # REST endpoints
+|   +-- models.py             # Domain models (pure dataclasses)
+|   +-- dao/                  # Data Access Object layer
+|   |   +-- base.py           # Abstract DAO interfaces
+|   |   +-- sqlite.py         # SQLite implementation (MVP)
+|   +-- templates.py          # Built-in + custom credential templates
+|   +-- callback.py           # Outbound callback delivery
+|   +-- config.py             # Configuration loading
++-- frontend/                  # Browser UI (Vanilla JS + Tailwind CSS)
+|   +-- index.html            # Connect page (two-step flow)
+|   +-- crypto.js             # Hybrid encryption (RSA-OAEP + AES-256-GCM)
++-- tests/
 ```
 
 ### DAO Pattern
 
-The data layer uses the **Data Access Object** pattern — all storage operations go through abstract interfaces, so the backing store can be swapped without touching business logic.
+The data layer uses the **Data Access Object** pattern -- all storage operations go through abstract interfaces, so the backing store can be swapped without touching business logic.
 
 ```
-┌─────────────┐      ┌──────────────┐      ┌─────────────────┐
-│   API Layer │─────→│   DAO Iface  │←─────│  SQLite (MVP)   │
-│  (api.py)   │      │  (base.py)   │←─────│  PostgreSQL     │
-│             │      │              │←─────│  DynamoDB       │
-└─────────────┘      └──────────────┘      │  Redis          │
-                                           │  ...            │
-                                           └─────────────────┘
++-------------+      +--------------+      +-----------------+
+|  API Layer  |----->|  DAO Iface   |<-----|  SQLite (MVP)   |
+|  (api.py)   |      |  (base.py)   |<-----|  PostgreSQL     |
+|             |      |              |<-----|  DynamoDB       |
++-------------+      +--------------+      +-----------------+
 ```
 
-The DAO backend is selected via configuration:
+## Configuration
+
+Settings are loaded from `config.yaml` in the project root:
 
 ```yaml
-# config.yaml
+server:
+  host: "0.0.0.0"
+  port: 8080
+  base_url: "http://localhost:8080"   # used to generate connect URLs
+
 storage:
-  backend: "sqlite"               # or "postgres", "dynamodb", ...
+  backend: "sqlite"                    # swappable via DAO pattern
   sqlite:
     path: "./data/broker.db"
-  postgres:
-    dsn: "postgresql://user:pass@host/linkauth"
-```
 
-## Deployment
-
-```bash
-docker run -p 8080:8080 \
-  -e DATABASE_URL=sqlite:///data/broker.db \
-  -v broker-data:/data \
-  ghcr.io/linkauth/linkauth
+sessions:
+  default_ttl: 600                     # session lifetime in seconds
+  max_ttl: 900
+  cleanup_interval: 60                 # expired session cleanup interval
 ```
 
 ## IETF Standardization
 
-LinkAuth is not just a product — it aims to contribute to the emerging standards for AI agent authorization.
+LinkAuth is not just a product -- it aims to contribute to the emerging standards for AI agent authorization.
 
-### Our Roadmap
+1. **Participate** -- Join the [OAuth Working Group](https://datatracker.ietf.org/wg/oauth/about/) mailing list and contribute to the active AI agent authorization drafts
+2. **Demonstrate** -- Present LinkAuth as running code at an [IETF Hackathon](https://www.ietf.org/how/runningcode/hackathons/)
+3. **Formalize** -- Submit an Internet-Draft: *"Zero-Knowledge Credential Brokering for Autonomous Agents"*
+4. **Standardize** -- Work toward WG adoption within the OAuth or GNAP working groups
 
-1. **Participate** — Join the [OAuth Working Group](https://datatracker.ietf.org/wg/oauth/about/) mailing list and contribute to the active AI agent authorization drafts (draft-oauth-ai-agents-on-behalf-of-user, draft-rosenberg-oauth-aauth, draft-klrc-aiagent-auth)
-2. **Demonstrate** — Present LinkAuth as running code at an [IETF Hackathon](https://www.ietf.org/how/runningcode/hackathons/) (held at every IETF meeting, remote participation possible)
-3. **Formalize** — Submit an Internet-Draft: *"Zero-Knowledge Credential Brokering for Autonomous Agents"*, formalizing the LinkAuth protocol as an interoperable specification
-4. **Standardize** — Work toward WG adoption within the OAuth or GNAP working groups
-
-The IETF values *running code and rough consensus* ([RFC 7282](https://datatracker.ietf.org/doc/html/rfc7282)). A working implementation with an SDK is the strongest argument for a protocol proposal.
-
-### Why This Matters
-
-The AI agent ecosystem currently lacks a standard for credential delegation. Multiple independent drafts are being proposed simultaneously — this is the right moment to contribute a battle-tested approach. LinkAuth's zero-knowledge architecture and device-flow UX offer a unique perspective that complements the existing proposals.
+The IETF values *running code and rough consensus* ([RFC 7282](https://datatracker.ietf.org/doc/html/rfc7282)). A working implementation is the strongest argument for a protocol proposal.
 
 ## Status
 
@@ -286,4 +332,4 @@ LinkAuth is in early development. See [TODO.md](TODO.md) for the current roadmap
 
 ## License
 
-AGPL-3.0 — see [LICENSE](LICENSE) for details.
+AGPL-3.0 -- see [LICENSE](LICENSE) for details.

@@ -1,0 +1,30 @@
+[project]
+name = "linkauth"
+version = "0.1.0"
+description = "A zero-knowledge credential broker for autonomous AI agents"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "aiosqlite>=0.20.0",
+    "pydantic>=2.0.0",
+    "httpx>=0.27.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+examples = [
+    "cryptography>=43.0.0",
+    "rich>=13.0.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
