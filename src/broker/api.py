@@ -60,12 +60,19 @@ class ConfirmSessionRequest(BaseModel):
     code: str
 
 
+class SecurityInfo(BaseModel):
+    secure: bool
+    mode: str  # "production", "development", "insecure"
+    message: str | None = None
+
+
 class SessionInfoResponse(BaseModel):
     status: str
     display_name: str
     code: str
     fields: list[dict[str, Any]]
     public_key: str
+    security: SecurityInfo
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +85,37 @@ def get_session_dao(request: Request) -> SessionDAO:
 
 def get_config(request: Request):
     return request.app.state.config
+
+
+def _detect_security(request: Request) -> SecurityInfo:
+    """Detect TLS/security status from the request and config."""
+    config = request.app.state.config
+    base_url: str = config.server.base_url
+
+    # Check if connection is over TLS
+    forwarded_proto = request.headers.get("x-forwarded-proto", "")
+    scheme = forwarded_proto or request.url.scheme
+    is_tls = scheme == "https" or base_url.startswith("https://")
+
+    # Check if this is a localhost/dev environment
+    host = request.url.hostname or ""
+    is_localhost = host in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+
+    if is_tls:
+        return SecurityInfo(secure=True, mode="production")
+    elif is_localhost:
+        return SecurityInfo(
+            secure=False,
+            mode="development",
+            message="Development mode -- connection is not encrypted. Do not enter real credentials.",
+        )
+    else:
+        return SecurityInfo(
+            secure=False,
+            mode="insecure",
+            message="WARNING: Connection is not encrypted (no TLS). Do not enter real credentials. "
+                    "Configure HTTPS or a reverse proxy before using in production.",
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +206,7 @@ async def get_session(
 @router.get("/connect/{code}", response_model=SessionInfoResponse)
 async def get_session_info(
     code: str,
+    request: Request,
     dao: SessionDAO = Depends(get_session_dao),
 ):
     """Frontend fetches session info to render the connect page."""
@@ -187,6 +226,7 @@ async def get_session_info(
             for f in session.template.fields
         ],
         public_key=session.public_key,
+        security=_detect_security(request),
     )
 
 

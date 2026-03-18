@@ -240,6 +240,22 @@ This allows arbitrarily large payloads (OAuth tokens, certificates, etc.) while 
 
 > **OAuth Caveat:** When the broker handles OAuth flows (Google, GitHub, etc.), it acts as the OAuth confidential client. The broker briefly sees the OAuth tokens in memory before encrypting them. This is an inherent limitation of OAuth -- the broker is trusted for OAuth flows but zero-knowledge for direct credential input.
 
+### TLS and End-to-End Encryption
+
+Credentials are end-to-end encrypted even without TLS -- the browser encrypts with the agent's public key before anything leaves the page. A network observer only sees ciphertext that is useless without the agent's private key.
+
+**However, TLS is still required in production** to guarantee the integrity of the encryption code itself. Without TLS, a man-in-the-middle could replace `crypto.js` with a malicious version that exfiltrates credentials in plaintext before encryption. TLS prevents this by ensuring the frontend code is delivered unmodified.
+
+| Scenario | Credentials safe? | Why |
+|----------|:-:|-----|
+| HTTPS (production) | Yes | E2E encryption + code integrity guaranteed |
+| HTTP on localhost | Yes | E2E encryption, no network MITM possible |
+| HTTP on remote host | **No** | E2E encryption present, but attacker could replace the JS that performs it |
+
+The frontend displays a security banner when TLS is not active:
+- **Yellow** (localhost) -- "Development mode" reminder
+- **Red** (remote without TLS) -- "Connection is not encrypted" warning, blocks real credential entry
+
 For the full security architecture and threat model, see [concept.md](concept.md).
 
 ## Standards Compliance

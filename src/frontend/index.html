@@ -20,6 +20,21 @@
 </head>
 <body class="h-full flex items-center justify-center p-4">
 
+  <!-- Security banner (shown dynamically based on TLS status) -->
+  <div id="banner-development" class="hidden fixed top-0 left-0 right-0 z-50 bg-amber-500 text-amber-950 text-center py-2 px-4 text-sm font-medium">
+    <svg class="inline h-4 w-4 mr-1 -mt-0.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+    </svg>
+    Development mode — connection is not encrypted. Do not enter real credentials.
+  </div>
+
+  <div id="banner-insecure" class="hidden fixed top-0 left-0 right-0 z-50 bg-red-600 text-white text-center py-2.5 px-4 text-sm font-semibold">
+    <svg class="inline h-4 w-4 mr-1 -mt-0.5" fill="none" viewBox="0 0 24 24" stroke-width="2" stroke="currentColor">
+      <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z" />
+    </svg>
+    WARNING: Connection is not encrypted (no TLS). Do not enter real credentials.
+  </div>
+
   <!-- Loading state -->
   <div id="view-loading" class="text-center">
     <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-brand-600 mx-auto"></div>
@@ -140,6 +155,14 @@
     showView("view-error");
   }
 
+  function showSecurityBanner(security) {
+    if (!security || security.secure) return;
+    const bannerId = security.mode === "insecure" ? "banner-insecure" : "banner-development";
+    document.getElementById(bannerId).classList.remove("hidden");
+    // Push content down so banner doesn't overlap
+    document.body.classList.add("pt-10");
+  }
+
   // ---------------------------------------------------------------------------
   // Init — extract code from URL path: /connect/ABCD-1234
   // ---------------------------------------------------------------------------
@@ -160,6 +183,9 @@
         return;
       }
       sessionData = await resp.json();
+
+      // Show security banner based on TLS status
+      showSecurityBanner(sessionData.security);
 
       if (sessionData.status === "confirmed") {
         renderCredentialForm();
