@@ -13,6 +13,7 @@ sessions:
   max_ttl: 900
   cleanup_interval: 60      # seconds
   code_length: 8            # e.g. "ABCD-1234"
+  poll_interval: 5          # RFC 8628: recommended polling interval in seconds
 
 rate_limit:
   max_sessions_per_minute: 10

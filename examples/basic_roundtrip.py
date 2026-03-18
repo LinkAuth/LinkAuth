@@ -126,18 +126,27 @@ def simulate_browser_encrypt_and_submit(
 # ---------------------------------------------------------------------------
 
 def poll_session(session_id: str, poll_token: str, timeout: int = 30) -> dict | None:
-    """Poll until credentials are ready or timeout."""
+    """Poll until credentials are ready or timeout. Respects RFC 8628 interval + slow_down."""
+    interval = 5  # default, overridden by server response
     deadline = time.time() + timeout
     while time.time() < deadline:
         resp = httpx.get(
             f"{BROKER_URL}/sessions/{session_id}",
             headers={"Authorization": f"Bearer {poll_token}"},
         )
+        if resp.status_code == 429:
+            # RFC 8628: slow_down — increase interval
+            data = resp.json()
+            interval = data.get("interval", interval + 5)
+            time.sleep(interval)
+            continue
         resp.raise_for_status()
         data = resp.json()
+        if "interval" in data:
+            interval = data["interval"]
         if data["status"] == "ready":
             return data
-        time.sleep(1)
+        time.sleep(interval)
     return None
 
 

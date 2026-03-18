@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from broker.callback import deliver_callback
@@ -13,6 +15,37 @@ from broker.models import Session, SessionStatus
 from broker.templates import resolve_template
 
 router = APIRouter(prefix="/v1")
+
+def _poll_interval(request: Request) -> int:
+    """Get the configured polling interval (RFC 8628)."""
+    return request.app.state.config.sessions.poll_interval
+
+
+# ---------------------------------------------------------------------------
+# RFC 9457 — Problem Details for HTTP APIs
+# ---------------------------------------------------------------------------
+
+def problem_response(
+    status: int,
+    title: str,
+    detail: str,
+    error_type: str = "about:blank",
+    extra: dict | None = None,
+) -> JSONResponse:
+    """Return an RFC 9457 application/problem+json error response."""
+    body = {
+        "type": error_type,
+        "title": title,
+        "status": status,
+        "detail": detail,
+    }
+    if extra:
+        body.update(extra)
+    return JSONResponse(
+        status_code=status,
+        content=body,
+        media_type="application/problem+json",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -42,11 +75,13 @@ class CreateSessionResponse(BaseModel):
     url: str
     poll_token: str
     expires_at: str
+    interval: int  # RFC 8628: recommended polling interval in seconds
 
 
 class SessionStatusResponse(BaseModel):
     status: str
     expires_at: str
+    interval: int | None = None  # RFC 8628: polling interval hint
     ciphertext: str | None = None
     algorithm: str | None = None
 
@@ -136,7 +171,11 @@ async def create_session(
             [f.model_dump() for f in body.fields] if body.fields else None,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        return problem_response(
+            status=400,
+            title="Invalid Template",
+            detail=str(e),
+        )
 
     ttl = min(body.ttl or config.sessions.default_ttl, config.sessions.max_ttl)
     now = datetime.now(timezone.utc)
@@ -161,31 +200,69 @@ async def create_session(
         url=url,
         poll_token=session.poll_token,
         expires_at=session.expires_at.isoformat(),
+        interval=config.sessions.poll_interval,
     )
 
 
-@router.get("/sessions/{session_id}", response_model=SessionStatusResponse)
+# Track last poll time per session for RFC 8628 slow_down
+_last_poll: dict[str, float] = {}
+
+
+@router.get("/sessions/{session_id}")
 async def get_session(
     session_id: str,
     request: Request,
     dao: SessionDAO = Depends(get_session_dao),
 ):
-    """Agent polls session status. Requires poll_token as Bearer token."""
+    """Agent polls session status. Requires poll_token as Bearer token.
+
+    Implements RFC 8628 polling semantics:
+    - Returns `interval` hint for recommended polling frequency
+    - Returns 429 with `slow_down` error if client polls too fast
+    """
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing poll_token")
+        return problem_response(
+            status=401,
+            title="Unauthorized",
+            detail="Missing or invalid Authorization header. Use: Bearer <poll_token>",
+        )
     poll_token = auth.removeprefix("Bearer ").strip()
 
     session = await dao.get(session_id)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found or expired")
+        return problem_response(
+            status=404,
+            title="Session Not Found",
+            detail="Session not found or expired.",
+        )
     if session.poll_token != poll_token:
-        raise HTTPException(status_code=403, detail="Invalid poll_token")
+        return problem_response(
+            status=403,
+            title="Forbidden",
+            detail="Invalid poll_token.",
+        )
+
+    # RFC 8628 §3.5: slow_down — if client polls faster than interval
+    poll_interval = _poll_interval(request)
+    now = time.monotonic()
+    last = _last_poll.get(session_id, 0.0)
+    if now - last < poll_interval:
+        return problem_response(
+            status=429,
+            title="Slow Down",
+            detail="Polling too frequently. Increase your polling interval.",
+            error_type="urn:ietf:params:oauth:error:slow_down",
+            extra={"interval": poll_interval + 5},
+        )
+    _last_poll[session_id] = now
 
     # If ready, consume (one-time retrieval)
     if session.status == SessionStatus.READY:
         consumed = await dao.consume(session_id)
         if consumed:
+            # Clean up tracking
+            _last_poll.pop(session_id, None)
             return SessionStatusResponse(
                 status="ready",
                 expires_at=consumed.expires_at.isoformat(),
@@ -196,6 +273,7 @@ async def get_session(
     return SessionStatusResponse(
         status=session.status.value,
         expires_at=session.expires_at.isoformat(),
+        interval=poll_interval,
     )
 
 
@@ -212,9 +290,9 @@ async def get_session_info(
     """Frontend fetches session info to render the connect page."""
     session = await dao.get_by_code(code)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found or expired")
+        return problem_response(404, "Session Not Found", "Session not found or expired.")
     if session.status not in (SessionStatus.PENDING, SessionStatus.CONFIRMED):
-        raise HTTPException(status_code=410, detail="Session already completed")
+        return problem_response(410, "Session Gone", "Session already completed.")
 
     return SessionInfoResponse(
         status=session.status.value,
@@ -238,9 +316,9 @@ async def confirm_code(
     """User confirms they see the correct code. Transitions to CONFIRMED."""
     session = await dao.get_by_code(code)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found or expired")
+        return problem_response(404, "Session Not Found", "Session not found or expired.")
     if session.status != SessionStatus.PENDING:
-        raise HTTPException(status_code=409, detail="Session already confirmed")
+        return problem_response(409, "Already Confirmed", "Session has already been confirmed.")
 
     await dao.update_status(session.session_id, SessionStatus.CONFIRMED)
 
@@ -255,13 +333,13 @@ async def complete_session(
     """Frontend submits encrypted credentials."""
     session = await dao.get_by_code(code)
     if not session:
-        raise HTTPException(status_code=404, detail="Session not found or expired")
+        return problem_response(404, "Session Not Found", "Session not found or expired.")
     if session.status not in (SessionStatus.PENDING, SessionStatus.CONFIRMED):
-        raise HTTPException(status_code=409, detail="Session not in a completable state")
+        return problem_response(409, "Session Not Completable", "Session is not in a completable state.")
 
     ok = await dao.store_ciphertext(session.session_id, body.ciphertext, body.algorithm)
     if not ok:
-        raise HTTPException(status_code=500, detail="Failed to store credentials")
+        return problem_response(500, "Storage Error", "Failed to store encrypted credentials.")
 
     if session.callback_url:
         background.add_task(

@@ -5,10 +5,11 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from broker.api import router
 from broker.config import AppConfig, load_config
@@ -66,6 +67,20 @@ async def lifespan(app: FastAPI):
     logger.info("LinkAuth broker stopped")
 
 
+class HSTSMiddleware(BaseHTTPMiddleware):
+    """Add HSTS header when running behind TLS (detected via X-Forwarded-Proto or config)."""
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response = await call_next(request)
+        config = request.app.state.config
+        forwarded_proto = request.headers.get("x-forwarded-proto", "")
+        is_tls = forwarded_proto == "https" or config.server.base_url.startswith("https://")
+        if is_tls:
+            # RFC 6797: max-age=1 year, includeSubDomains
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+
 def create_app(config: AppConfig | None = None) -> FastAPI:
     if config is None:
         config = load_config()
@@ -77,6 +92,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.config = config
+
+    # HSTS — add Strict-Transport-Security when behind TLS
+    app.add_middleware(HSTSMiddleware)
 
     # CORS — allow frontend on same origin
     app.add_middleware(

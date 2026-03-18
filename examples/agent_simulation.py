@@ -112,6 +112,7 @@ class CredentialStore:
         if not pending:
             return
 
+        interval = 5  # RFC 8628: default polling interval
         deadline = time.time() + 300
         while time.time() < deadline:
             try:
@@ -121,6 +122,9 @@ class CredentialStore:
                 )
                 if resp.status_code == 200:
                     data = resp.json()
+                    # RFC 8628: respect interval hint from server
+                    if "interval" in data:
+                        interval = data["interval"]
                     if data["status"] == "ready" and data.get("ciphertext"):
                         credentials = self._decrypt(
                             pending["private_key"], data["ciphertext"]
@@ -128,9 +132,13 @@ class CredentialStore:
                         self._credentials[scope] = credentials
                         del self._pending[scope]
                         return
+                elif resp.status_code == 429:
+                    # RFC 8628 §3.5: slow_down — increase interval
+                    data = resp.json()
+                    interval = data.get("interval", interval + 5)
             except Exception:
                 pass
-            time.sleep(2)
+            time.sleep(interval)
 
     @staticmethod
     def _decrypt(private_key: rsa.RSAPrivateKey, ciphertext_b64: str) -> dict:

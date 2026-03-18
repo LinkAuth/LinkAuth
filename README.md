@@ -262,13 +262,16 @@ For the full security architecture and threat model, see [concept.md](concept.md
 
 LinkAuth is built on established IETF standards:
 
-| Standard | Role in LinkAuth |
-|----------|-----------------|
-| [RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628) -- OAuth 2.0 Device Authorization Grant | Core inspiration for the URL + Code + Polling UX |
-| [RFC 8017](https://datatracker.ietf.org/doc/html/rfc8017) -- PKCS #1 (RSA-OAEP) | Asymmetric encryption for key wrapping |
-| [RFC 5116](https://datatracker.ietf.org/doc/html/rfc5116) -- AES-GCM Authenticated Encryption | Symmetric encryption for credential payloads |
-| [RFC 8446](https://datatracker.ietf.org/doc/html/rfc8446) -- TLS 1.3 | Mandatory transport security |
-| [RFC 9457](https://datatracker.ietf.org/doc/html/rfc9457) -- Problem Details for HTTP APIs | Structured API error responses |
+| Standard | Role in LinkAuth | Status |
+|----------|-----------------|--------|
+| [RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628) -- OAuth 2.0 Device Authorization Grant | URL + Code + Polling UX, `interval` hint, `slow_down` (429) error | Implemented |
+| [RFC 8017](https://datatracker.ietf.org/doc/html/rfc8017) -- PKCS #1 (RSA-OAEP) | Asymmetric encryption for AES key wrapping | Implemented |
+| [RFC 5116](https://datatracker.ietf.org/doc/html/rfc5116) -- AES-GCM Authenticated Encryption | Symmetric encryption for credential payloads | Implemented |
+| [RFC 9457](https://datatracker.ietf.org/doc/html/rfc9457) -- Problem Details for HTTP APIs | All API errors returned as `application/problem+json` | Implemented |
+| [RFC 8446](https://datatracker.ietf.org/doc/html/rfc8446) -- TLS 1.3 | Transport security via reverse proxy (Caddy), HSTS header | Via deployment |
+| [RFC 6797](https://datatracker.ietf.org/doc/html/rfc6797) -- HTTP Strict Transport Security | HSTS header auto-added when TLS is detected | Implemented |
+
+> **Note on TLS:** LinkAuth itself is an application server -- it does not terminate TLS directly. TLS 1.3 is enforced via the reference deployment (Caddy reverse proxy with automatic Let's Encrypt). The application detects TLS status and adds HSTS headers when running behind a TLS-terminating proxy. A security banner warns users when TLS is not present.
 
 ### Emerging IETF Drafts (AI Agent Authorization)
 

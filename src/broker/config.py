@@ -30,6 +30,7 @@ class SessionsConfig:
     max_ttl: int = 900
     cleanup_interval: int = 60
     code_length: int = 8
+    poll_interval: int = 5  # RFC 8628: recommended polling interval in seconds
 
 
 @dataclass
