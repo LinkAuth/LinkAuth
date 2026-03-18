@@ -332,4 +332,4 @@ LinkAuth is in early development. See [TODO.md](TODO.md) for the current roadmap
 
 ## License
 
-AGPL-3.0 -- see [LICENSE](LICENSE) for details.
+Apache 2.0 -- see [LICENSE](LICENSE) for details.
