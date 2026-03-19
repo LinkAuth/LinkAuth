@@ -78,9 +78,13 @@ class OAuthSession:
 def _discover_oidc_endpoints(issuer: str) -> dict[str, str]:
     """Fetch OIDC Discovery document from issuer.
 
+    Accepts both full URL (https://example.com) and bare domain (example.com).
     Returns dict with authorization_endpoint, token_endpoint, etc.
     Raises ValueError if discovery fails.
     """
+    # Accept bare domain — prepend https:// if no scheme
+    if not issuer.startswith(("http://", "https://")):
+        issuer = f"https://{issuer}"
     well_known = f"{issuer.rstrip('/')}/.well-known/openid-configuration"
     try:
         resp = httpx.get(well_known, timeout=10)
@@ -227,8 +231,16 @@ def build_authorization_url(
     scopes: list[str],
     state: str,
     code_challenge: str,
+    extra_params: dict[str, str] | None = None,
 ) -> str:
-    """Build the OAuth authorization URL with PKCE."""
+    """Build the OAuth authorization URL with PKCE.
+
+    extra_params are passed as additional query parameters to the auth URL.
+    Use this for provider-specific parameters like:
+    - audience (Auth0)
+    - hd (Google domain hint)
+    - login_hint, prompt, etc.
+    """
     client = AsyncOAuth2Client(
         client_id=provider.client_id,
         redirect_uri=redirect_uri,
@@ -240,6 +252,7 @@ def build_authorization_url(
         state=state,
         code_challenge=code_challenge,
         code_challenge_method="S256",
+        **(extra_params or {}),
     )
     return url
 

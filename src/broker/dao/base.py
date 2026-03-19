@@ -21,8 +21,11 @@ class SessionDAO(ABC):
         """Retrieve a session by its human-readable code."""
 
     @abstractmethod
-    async def update_status(self, session_id: str, status: SessionStatus) -> bool:
-        """Update session status. Returns False if session not found."""
+    async def update_status(
+        self, session_id: str, status: SessionStatus,
+        connect_token: str | None = None,
+    ) -> bool:
+        """Update session status. Optionally set connect_token. Returns False if not found."""
 
     @abstractmethod
     async def store_ciphertext(

@@ -171,6 +171,7 @@
   const API_BASE = window.location.origin + "/v1";
   let sessionData = null;  // { status, display_name, code, fields, public_key }
   let sessionCode = null;
+  let connectToken = null; // issued after code confirmation, required for Step 2
 
   // ---------------------------------------------------------------------------
   // Views
@@ -225,8 +226,13 @@
       // Show security banner based on TLS status
       showSecurityBanner(sessionData.security);
 
-      if (sessionData.status === "confirmed") {
+      if (sessionData.status === "confirmed" && connectToken) {
+        // Only show Step 2 if we have the connect_token (same browser that confirmed)
         showStep2();
+      } else if (sessionData.status === "confirmed") {
+        // Another browser confirmed — we can't proceed
+        showError("This session has already been confirmed in another browser.");
+        return;
       } else {
         document.getElementById("confirm-service").textContent = sessionData.display_name;
         document.getElementById("confirm-code").textContent = sessionData.code;
@@ -243,7 +249,7 @@
       document.getElementById("oauth-service").textContent = sessionData.display_name;
       document.getElementById("oauth-provider-name").textContent = sessionData.display_name;
       document.getElementById("oauth-btn-label").textContent = sessionData.display_name;
-      document.getElementById("btn-oauth").href = `${API_BASE}/oauth/authorize/${sessionCode}`;
+      document.getElementById("btn-oauth").href = `${API_BASE}/oauth/authorize/${sessionCode}?connect_token=${encodeURIComponent(connectToken)}`;
       showView("view-oauth");
     } else {
       // Form flow — show credential input fields
@@ -262,11 +268,13 @@
 
     try {
       const resp = await fetch(`${API_BASE}/connect/${sessionCode}/confirm`, { method: "POST" });
-      if (!resp.ok && resp.status !== 204) {
+      if (!resp.ok) {
         const err = await resp.json().catch(() => ({}));
         showError(err.detail || "Failed to confirm code.");
         return;
       }
+      const data = await resp.json();
+      connectToken = data.connect_token;
       showStep2();
     } catch (e) {
       showError("Connection error. Please try again.");
@@ -348,6 +356,7 @@
         body: JSON.stringify({
           ciphertext: ciphertext,
           algorithm: "RSA-OAEP-256+AES-256-GCM",
+          connect_token: connectToken,
         }),
       });
 

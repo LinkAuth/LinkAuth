@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -32,6 +33,11 @@ def _poll_interval(request: Request) -> int:
 # ---------------------------------------------------------------------------
 # RFC 9457 — Problem Details for HTTP APIs
 # ---------------------------------------------------------------------------
+
+def _session_not_found() -> JSONResponse:
+    """Standard 404 for missing/expired/confirmed sessions. Intentionally vague."""
+    return problem_response(404, "Session Not Found", "Session not found or expired.")
+
 
 def problem_response(
     status: int,
@@ -75,6 +81,7 @@ class CreateSessionRequest(BaseModel):
     fields: list[FieldSchema] | None = None
     oauth_provider: str | None = None
     oauth_scopes: list[str] | None = None
+    oauth_extra_params: dict[str, str] | None = None
     callback_url: str | None = None
     ttl: int | None = None
 
@@ -99,10 +106,11 @@ class SessionStatusResponse(BaseModel):
 class CompleteSessionRequest(BaseModel):
     ciphertext: str
     algorithm: str = "RSA-OAEP-256+AES-256-GCM"
+    connect_token: str
 
 
-class ConfirmSessionRequest(BaseModel):
-    code: str
+class ConfirmSessionResponse(BaseModel):
+    connect_token: str  # one-time token to proceed with Step 2
 
 
 class SecurityInfo(BaseModel):
@@ -183,6 +191,7 @@ async def create_session(
             [f.model_dump() for f in body.fields] if body.fields else None,
             oauth_provider=body.oauth_provider,
             oauth_scopes=body.oauth_scopes,
+            oauth_extra_params=body.oauth_extra_params,
         )
     except ValueError as e:
         return problem_response(
@@ -259,11 +268,7 @@ async def get_session(
 
     session = await dao.get(session_id)
     if not session:
-        return problem_response(
-            status=404,
-            title="Session Not Found",
-            detail="Session not found or expired.",
-        )
+        return _session_not_found()
     if session.poll_token != poll_token:
         return problem_response(
             status=403,
@@ -315,12 +320,22 @@ async def get_session_info(
     request: Request,
     dao: SessionDAO = Depends(get_session_dao),
 ):
-    """Frontend fetches session info to render the connect page."""
+    """Frontend fetches session info to render the connect page.
+
+    Only returns full session data (fields, public_key) for PENDING sessions.
+    Once CONFIRMED, the session is locked to the browser that confirmed it
+    (via connect_token). Other browsers only see that confirmation happened.
+    """
     session = await dao.get_by_code(code)
     if not session:
-        return problem_response(404, "Session Not Found", "Session not found or expired.")
+        return _session_not_found()
     if session.status not in (SessionStatus.PENDING, SessionStatus.CONFIRMED):
         return problem_response(410, "Session Gone", "Session already completed.")
+
+    # After confirmation, behave as if the session doesn't exist.
+    # This prevents information leakage (attacker can't tell if a code is valid).
+    if session.status == SessionStatus.CONFIRMED:
+        return _session_not_found()
 
     return SessionInfoResponse(
         status=session.status.value,
@@ -334,23 +349,32 @@ async def get_session_info(
         ],
         public_key=session.public_key,
         security=_detect_security(request),
-        # OAuth URL will be populated when OAuth flow is implemented
     )
 
 
-@router.post("/connect/{code}/confirm", status_code=204)
+@router.post("/connect/{code}/confirm", response_model=ConfirmSessionResponse)
 async def confirm_code(
     code: str,
     dao: SessionDAO = Depends(get_session_dao),
 ):
-    """User confirms they see the correct code. Transitions to CONFIRMED."""
+    """User confirms they see the correct code. Issues a one-time connect_token.
+
+    After confirmation, the code cannot be used again. All subsequent
+    operations (OAuth redirect, form submit) require the connect_token.
+    """
     session = await dao.get_by_code(code)
     if not session:
-        return problem_response(404, "Session Not Found", "Session not found or expired.")
+        return _session_not_found()
     if session.status != SessionStatus.PENDING:
         return problem_response(409, "Already Confirmed", "Session has already been confirmed.")
 
-    await dao.update_status(session.session_id, SessionStatus.CONFIRMED)
+    # Issue a one-time connect_token — this replaces the code for Step 2
+    connect_token = f"ct_{secrets.token_urlsafe(32)}"
+    await dao.update_status(
+        session.session_id, SessionStatus.CONFIRMED,
+        connect_token=connect_token,
+    )
+    return ConfirmSessionResponse(connect_token=connect_token)
 
 
 @router.post("/connect/{code}/complete", status_code=204)
@@ -360,12 +384,17 @@ async def complete_session(
     background: BackgroundTasks,
     dao: SessionDAO = Depends(get_session_dao),
 ):
-    """Frontend submits encrypted credentials."""
+    """Frontend submits encrypted credentials. Requires connect_token."""
     session = await dao.get_by_code(code)
     if not session:
-        return problem_response(404, "Session Not Found", "Session not found or expired.")
-    if session.status not in (SessionStatus.PENDING, SessionStatus.CONFIRMED):
+        return _session_not_found()
+    if session.status != SessionStatus.CONFIRMED:
         return problem_response(409, "Session Not Completable", "Session is not in a completable state.")
+    if body.connect_token != session.connect_token:
+        return problem_response(
+            403, "Invalid Connect Token",
+            "Invalid connect_token. Re-confirm the session code.",
+        )
 
     ok = await dao.store_ciphertext(session.session_id, body.ciphertext, body.algorithm)
     if not ok:
@@ -389,19 +418,28 @@ _oauth_sessions: dict[str, OAuthSession] = {}
 @router.get("/oauth/authorize/{code}")
 async def oauth_authorize(
     code: str,
+    connect_token: str | None = None,
     dao: SessionDAO = Depends(get_session_dao),
     config=Depends(get_config),
 ):
     """Redirect user to OAuth provider after code confirmation.
 
     Called by the frontend when user clicks "Connect with <Provider>".
-    Generates PKCE challenge and redirects to the provider's auth URL.
+    Requires connect_token issued during code confirmation.
     """
     session = await dao.get_by_code(code)
     if not session:
-        return problem_response(404, "Session Not Found", "Session not found or expired.")
-    if session.status not in (SessionStatus.PENDING, SessionStatus.CONFIRMED):
-        return problem_response(409, "Session Not Completable", "Session is not in a completable state.")
+        return _session_not_found()
+    if session.status != SessionStatus.CONFIRMED:
+        return problem_response(
+            409, "Code Not Confirmed",
+            "Session code must be confirmed before starting OAuth flow.",
+        )
+    if not connect_token or connect_token != session.connect_token:
+        return problem_response(
+            403, "Invalid Connect Token",
+            "Invalid or missing connect_token. Re-confirm the session code.",
+        )
     if session.template.template_type != TemplateType.OAUTH or not session.template.oauth_provider:
         return problem_response(400, "Not an OAuth Session", "This session does not use OAuth.")
 
@@ -410,7 +448,7 @@ async def oauth_authorize(
     except ValueError as e:
         return problem_response(503, "OAuth Provider Error", str(e))
 
-    # Generate PKCE (RFC 7636)
+    # Generate PKCE (RFC 7636) — fresh for every attempt
     code_verifier, code_challenge = generate_pkce()
 
     # Use session_id as state to map callback back to this session
@@ -427,11 +465,8 @@ async def oauth_authorize(
         scopes=session.template.oauth_scopes,
         state=state,
         code_challenge=code_challenge,
+        extra_params=session.template.oauth_extra_params,
     )
-
-    # Mark session as confirmed (user initiated OAuth flow)
-    if session.status == SessionStatus.PENDING:
-        await dao.update_status(session.session_id, SessionStatus.CONFIRMED)
 
     return RedirectResponse(url=auth_url, status_code=302)
 
@@ -451,9 +486,14 @@ async def oauth_callback(
     Exchanges the authorization code for tokens, encrypts them with
     the agent's public key, and stores the ciphertext.
     """
-    # Handle provider errors
+    # Handle provider errors — reset session to PENDING so code must be re-confirmed
     if error:
         detail = error_description or error
+        if state:
+            _oauth_sessions.pop(state, None)
+            session = await dao.get(state)
+            if session:
+                await dao.update_status(session.session_id, SessionStatus.PENDING)
         return problem_response(400, "OAuth Authorization Failed", f"Provider returned error: {detail}")
 
     if not state or not code:
@@ -487,6 +527,8 @@ async def oauth_callback(
             code_verifier=oauth_session.code_verifier,
         )
     except ValueError as e:
+        # Reset to PENDING — user must re-confirm code for next attempt
+        await dao.update_status(session.session_id, SessionStatus.PENDING)
         return problem_response(502, "OAuth Token Exchange Failed", str(e))
 
     # Encrypt token with agent's public key (server-side encryption)

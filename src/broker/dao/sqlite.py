@@ -21,9 +21,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     code         TEXT NOT NULL UNIQUE,
     public_key   TEXT NOT NULL,
     template_json TEXT NOT NULL,
-    status       TEXT NOT NULL DEFAULT 'pending',
-    poll_token   TEXT NOT NULL,
-    callback_url TEXT,
+    status        TEXT NOT NULL DEFAULT 'pending',
+    poll_token    TEXT NOT NULL,
+    connect_token TEXT,
+    callback_url  TEXT,
     ciphertext   TEXT,
     algorithm    TEXT,
     created_at   TEXT NOT NULL,
@@ -62,6 +63,7 @@ def _template_to_json(t: CredentialTemplate) -> str:
         ],
         "oauth_provider": t.oauth_provider,
         "oauth_scopes": t.oauth_scopes,
+        "oauth_extra_params": t.oauth_extra_params,
         "builtin": t.builtin,
     })
 
@@ -75,6 +77,7 @@ def _json_to_template(raw: str) -> CredentialTemplate:
         fields=[FieldDefinition(**f) for f in d.get("fields", [])],
         oauth_provider=d.get("oauth_provider"),
         oauth_scopes=d.get("oauth_scopes", []),
+        oauth_extra_params=d.get("oauth_extra_params", {}),
         builtin=d.get("builtin", False),
     )
 
@@ -87,6 +90,7 @@ def _row_to_session(row: aiosqlite.Row) -> Session:
         template=_json_to_template(row["template_json"]),
         status=SessionStatus(row["status"]),
         poll_token=row["poll_token"],
+        connect_token=row["connect_token"],
         callback_url=row["callback_url"],
         ciphertext=row["ciphertext"],
         algorithm=row["algorithm"],
@@ -121,9 +125,9 @@ class SqliteSessionDAO(SessionDAO):
         await self.db.execute(
             """INSERT INTO sessions
                (session_id, code, public_key, template_json, status,
-                poll_token, callback_url, ciphertext, algorithm,
+                poll_token, connect_token, callback_url, ciphertext, algorithm,
                 created_at, expires_at, consumed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session.session_id,
                 session.code,
@@ -131,6 +135,7 @@ class SqliteSessionDAO(SessionDAO):
                 _template_to_json(session.template),
                 session.status.value,
                 session.poll_token,
+                session.connect_token,
                 session.callback_url,
                 session.ciphertext,
                 session.algorithm,
@@ -153,11 +158,20 @@ class SqliteSessionDAO(SessionDAO):
         session_id = Session.hash_code(code)
         return await self.get(session_id)
 
-    async def update_status(self, session_id: str, status: SessionStatus) -> bool:
-        cursor = await self.db.execute(
-            "UPDATE sessions SET status = ? WHERE session_id = ?",
-            (status.value, session_id),
-        )
+    async def update_status(
+        self, session_id: str, status: SessionStatus,
+        connect_token: str | None = None,
+    ) -> bool:
+        if connect_token is not None:
+            cursor = await self.db.execute(
+                "UPDATE sessions SET status = ?, connect_token = ? WHERE session_id = ?",
+                (status.value, connect_token, session_id),
+            )
+        else:
+            cursor = await self.db.execute(
+                "UPDATE sessions SET status = ? WHERE session_id = ?",
+                (status.value, session_id),
+            )
         await self.db.commit()
         return cursor.rowcount > 0
 

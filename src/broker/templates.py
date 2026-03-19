@@ -104,12 +104,24 @@ def resolve_template(
     fields: list[dict] | None = None,
     oauth_provider: str | None = None,
     oauth_scopes: list[str] | None = None,
+    oauth_extra_params: dict[str, str] | None = None,
 ) -> CredentialTemplate:
     """Resolve a template from a built-in ID, custom fields, or OAuth config."""
-    # 1. Built-in template lookup
-    if template_id and template_id not in ("custom", "oauth") and template_id in ALL_BUILTIN_TEMPLATES:
+    # 1. OAuth — oauth_provider always wins, regardless of template_id
+    if oauth_provider:
+        return CredentialTemplate(
+            template_id=template_id or "oauth",
+            display_name=display_name or f"OAuth ({oauth_provider})",
+            template_type=TemplateType.OAUTH,
+            oauth_provider=oauth_provider,
+            oauth_scopes=oauth_scopes or [],
+            oauth_extra_params=oauth_extra_params or {},
+            builtin=False,
+        )
+
+    # 2. Built-in template lookup
+    if template_id and template_id in ALL_BUILTIN_TEMPLATES:
         tpl = ALL_BUILTIN_TEMPLATES[template_id]
-        # Allow display_name override
         if display_name:
             return CredentialTemplate(
                 template_id=tpl.template_id,
@@ -118,20 +130,10 @@ def resolve_template(
                 fields=tpl.fields,
                 oauth_provider=tpl.oauth_provider,
                 oauth_scopes=tpl.oauth_scopes,
+                oauth_extra_params=tpl.oauth_extra_params,
                 builtin=tpl.builtin,
             )
         return tpl
-
-    # 2. Custom OAuth template (provider specified inline)
-    if template_id == "oauth" and oauth_provider:
-        return CredentialTemplate(
-            template_id="oauth",
-            display_name=display_name or f"OAuth ({oauth_provider})",
-            template_type=TemplateType.OAUTH,
-            oauth_provider=oauth_provider,
-            oauth_scopes=oauth_scopes or [],
-            builtin=False,
-        )
 
     # 3. Custom form template (fields specified inline)
     if fields:

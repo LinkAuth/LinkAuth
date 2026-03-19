@@ -52,6 +52,8 @@ class CredentialTemplate:
     # For OAUTH templates: which provider + scopes
     oauth_provider: str | None = None  # references OAuthProviderConfig.provider_id
     oauth_scopes: list[str] = field(default_factory=list)
+    # Extra query params for the authorization URL (e.g. audience, hd, login_hint)
+    oauth_extra_params: dict[str, str] = field(default_factory=dict)
     builtin: bool = True
 
 
@@ -63,6 +65,7 @@ class Session:
     template: CredentialTemplate
     status: SessionStatus = SessionStatus.PENDING
     poll_token: str = ""
+    connect_token: str | None = None  # one-time token issued after code confirmation
     callback_url: str | None = None
     ciphertext: str | None = None
     algorithm: str | None = None
