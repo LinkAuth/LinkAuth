@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -40,11 +41,14 @@ class RateLimitConfig:
 
 @dataclass
 class OAuthProviderConfig:
-    auth_url: str = ""
-    token_url: str = ""
+    provider_id: str = ""
+    # URLs — auto-discovered for known providers, manual for custom ones
+    auth_url: str | None = None
+    token_url: str | None = None
+    userinfo_url: str | None = None
+    # Credentials — loaded from env: OAUTH_{PROVIDER}_CLIENT_ID / _CLIENT_SECRET
     client_id: str = ""
     client_secret: str = ""
-    userinfo_url: str | None = None
 
 
 @dataclass
@@ -72,12 +76,20 @@ def load_config(path: str = "config.yaml") -> AppConfig:
 
     sqlite_raw = storage_raw.get("sqlite", {})
 
-    # Parse OAuth providers
+    # Parse OAuth providers — credentials from env, URLs from YAML
     oauth_raw = raw.get("oauth_providers", {})
-    oauth_providers = {
-        name: OAuthProviderConfig(**provider_raw)
-        for name, provider_raw in oauth_raw.items()
-    }
+    oauth_providers = {}
+    for name, provider_raw in oauth_raw.items():
+        provider_raw = provider_raw or {}  # handle empty `google: {}`
+        env_prefix = f"OAUTH_{name.upper()}"
+        oauth_providers[name] = OAuthProviderConfig(
+            provider_id=name,
+            auth_url=provider_raw.get("auth_url"),
+            token_url=provider_raw.get("token_url"),
+            userinfo_url=provider_raw.get("userinfo_url"),
+            client_id=os.environ.get(f"{env_prefix}_CLIENT_ID", ""),
+            client_secret=os.environ.get(f"{env_prefix}_CLIENT_SECRET", ""),
+        )
 
     return AppConfig(
         server=ServerConfig(**server_raw),
