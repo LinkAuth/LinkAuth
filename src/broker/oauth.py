@@ -18,6 +18,7 @@ import base64
 import hashlib
 import json
 import logging
+import os
 import secrets
 from dataclasses import dataclass
 
@@ -98,35 +99,56 @@ def resolve_provider(
 ) -> ResolvedProvider:
     """Resolve a provider ID to a fully configured provider.
 
-    Resolution order:
+    No YAML entry required for known providers — credentials from env vars
+    are sufficient. Config YAML is only needed for overrides (issuer,
+    custom auth_url/token_url).
+
+    Resolution order for URLs:
     1. Config overrides (auth_url/token_url from config.yaml)
-    2. loginpass predefined providers
+    2. loginpass predefined providers (22+ built-in)
     3. OIDC Discovery via issuer URL
 
     Raises ValueError with a specific message if resolution fails.
     """
-    # 1. Must be registered in config.yaml
-    if provider_id not in config_providers:
-        raise ValueError(
-            f"OAuth provider '{provider_id}' is not registered. "
-            f"Add '{provider_id}' to oauth_providers in config.yaml."
-        )
+    # 1. Build effective config: YAML override + env vars (read at request time)
+    cfg = config_providers.get(provider_id)
+    env_prefix = f"OAUTH_{provider_id.upper()}"
+    client_id = os.environ.get(f"{env_prefix}_CLIENT_ID", "")
+    client_secret = os.environ.get(f"{env_prefix}_CLIENT_SECRET", "")
 
-    cfg = config_providers[provider_id]
+    # YAML config overrides env for URLs/issuer only (not credentials)
+    if cfg:
+        # Prefer env credentials, fall back to config (for backwards compat)
+        client_id = client_id or cfg.client_id
+        client_secret = client_secret or cfg.client_secret
 
-    # 2. Credentials must be set via env
-    if not cfg.client_id or not cfg.client_secret:
-        env_prefix = f"OAUTH_{provider_id.upper()}"
-        raise ValueError(
-            f"OAuth provider '{provider_id}' is missing credentials. "
+    # 2. Credentials must exist
+    if not client_id or not client_secret:
+        is_known = provider_id in _LOGINPASS_PROVIDERS
+        hint = (
             f"Set {env_prefix}_CLIENT_ID and {env_prefix}_CLIENT_SECRET "
             f"environment variables."
         )
+        if not is_known and not cfg:
+            hint += (
+                f" Provider '{provider_id}' is not a known provider — "
+                f"also set {env_prefix}_ISSUER for OIDC Discovery, or "
+                f"{env_prefix}_AUTH_URL + {env_prefix}_TOKEN_URL."
+            )
+        raise ValueError(
+            f"OAuth provider '{provider_id}' is not configured. {hint}"
+        )
 
-    # 3. Resolve URLs — priority: config override > loginpass > OIDC discovery
-    auth_url = cfg.auth_url
-    token_url = cfg.token_url
-    userinfo_url = cfg.userinfo_url
+    # 3. Resolve URLs — priority: env > YAML > loginpass > OIDC discovery
+    auth_url = (
+        os.environ.get(f"{env_prefix}_AUTH_URL")
+        or (cfg.auth_url if cfg else None)
+    )
+    token_url = (
+        os.environ.get(f"{env_prefix}_TOKEN_URL")
+        or (cfg.token_url if cfg else None)
+    )
+    userinfo_url = cfg.userinfo_url if cfg else None
     server_metadata_url = None
 
     # Try loginpass if URLs not explicitly set
@@ -156,9 +178,13 @@ def resolve_provider(
             token_url = token_url or lp.get("access_token_url")
 
     # Try OIDC Discovery via issuer if still missing
-    if (not auth_url or not token_url) and cfg.issuer:
+    issuer = (
+        os.environ.get(f"{env_prefix}_ISSUER")
+        or (cfg.issuer if cfg else None)
+    )
+    if (not auth_url or not token_url) and issuer:
         try:
-            endpoints = _discover_oidc_endpoints(cfg.issuer)
+            endpoints = _discover_oidc_endpoints(issuer)
             auth_url = auth_url or endpoints.get("authorization_endpoint")
             token_url = token_url or endpoints.get("token_endpoint")
             userinfo_url = userinfo_url or endpoints.get("userinfo_endpoint")
@@ -170,18 +196,18 @@ def resolve_provider(
 
     if not auth_url or not token_url:
         raise ValueError(
-            f"OAuth provider '{provider_id}' has no auth_url/token_url configured, "
-            f"is not a loginpass provider, and has no issuer for OIDC Discovery. "
-            f"Add auth_url + token_url or issuer to oauth_providers.{provider_id} "
-            f"in config.yaml."
+            f"OAuth provider '{provider_id}' cannot resolve auth_url/token_url. "
+            f"Set {env_prefix}_ISSUER for OIDC Discovery, or "
+            f"{env_prefix}_AUTH_URL + {env_prefix}_TOKEN_URL explicitly. "
+            f"Alternatively, add these to oauth_providers.{provider_id} in config.yaml."
         )
 
     return ResolvedProvider(
         provider_id=provider_id,
         auth_url=auth_url,
         token_url=token_url,
-        client_id=cfg.client_id,
-        client_secret=cfg.client_secret,
+        client_id=client_id,
+        client_secret=client_secret,
         userinfo_url=userinfo_url,
         server_metadata_url=server_metadata_url,
     )

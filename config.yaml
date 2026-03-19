@@ -18,35 +18,27 @@ sessions:
 rate_limit:
   max_sessions_per_minute: 10
 
-# OAuth providers — define connection details once, reused across templates.
-# Templates like "google_mail" or "github" reference these by provider ID.
+# OAuth providers
 #
-# Provider resolution (in order):
-#   1. Explicit auth_url + token_url from this file (overrides everything)
-#   2. loginpass predefined providers (Google, GitHub, Slack, Discord, Spotify, ...)
-#   3. OIDC Discovery via issuer URL (/.well-known/openid-configuration)
+# All OAuth configuration is driven by environment variables (see .env.example).
+# No YAML entry is needed to activate a provider — just set the env vars:
 #
-# Credentials are NEVER stored here — they are loaded from environment variables:
-#   OAUTH_{PROVIDER}_CLIENT_ID
-#   OAUTH_{PROVIDER}_CLIENT_SECRET
+#   OAUTH_{PROVIDER}_CLIENT_ID       (required)
+#   OAUTH_{PROVIDER}_CLIENT_SECRET   (required)
+#   OAUTH_{PROVIDER}_ISSUER          (for OIDC Discovery — Auth0, Keycloak, Okta, ...)
+#   OAUTH_{PROVIDER}_AUTH_URL        (explicit override)
+#   OAUTH_{PROVIDER}_TOKEN_URL       (explicit override)
 #
-# Examples:
+# Known providers (Google, GitHub, Slack, Discord, Spotify, and 16 more via loginpass)
+# only need CLIENT_ID + CLIENT_SECRET. URLs are auto-discovered.
+#
+# You can also mix both: secrets stay in .env, while URLs or issuer are defined here.
+# YAML and .env complement each other — env vars always take precedence if both are set.
 #
 # oauth_providers:
-#   google: {}                             # loginpass knows Google — zero config
-#   github: {}                             # loginpass knows GitHub — zero config
-#   auth0:                                 # OIDC Discovery via issuer
-#     issuer: "https://your-tenant.us.auth0.com"
-#   microsoft:                             # override loginpass defaults (e.g. tenant)
+#   microsoft:                             # override tenant-specific URLs
 #     auth_url: "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize"
 #     token_url: "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
-#   corp_sso:                              # custom provider, full config
+#   corp_sso:                              # custom provider (URLs via YAML, secrets via env)
 #     auth_url: "https://sso.corp.com/oauth2/authorize"
 #     token_url: "https://sso.corp.com/oauth2/token"
-#
-# For all providers, set credentials in .env (see .env.example):
-#   OAUTH_GOOGLE_CLIENT_ID=...
-#   OAUTH_GOOGLE_CLIENT_SECRET=...
-
-oauth_providers:
-  google: {}
