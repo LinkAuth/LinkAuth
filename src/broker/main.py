@@ -5,6 +5,9 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from dotenv import load_dotenv
+load_dotenv()  # Load .env before anything reads os.environ
+
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse

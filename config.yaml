@@ -53,3 +53,6 @@ rate_limit:
 #     auth_url: "https://sso.corp.com/oauth2/authorize"
 #     token_url: "https://sso.corp.com/oauth2/token"
 #     # Credentials: set OAUTH_CORP_SSO_CLIENT_ID and OAUTH_CORP_SSO_CLIENT_SECRET in .env
+
+oauth_providers:
+  google: {}
