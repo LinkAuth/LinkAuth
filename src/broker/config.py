@@ -39,11 +39,21 @@ class RateLimitConfig:
 
 
 @dataclass
+class OAuthProviderConfig:
+    auth_url: str = ""
+    token_url: str = ""
+    client_id: str = ""
+    client_secret: str = ""
+    userinfo_url: str | None = None
+
+
+@dataclass
 class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     sessions: SessionsConfig = field(default_factory=SessionsConfig)
     rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
+    oauth_providers: dict[str, OAuthProviderConfig] = field(default_factory=dict)
 
 
 def load_config(path: str = "config.yaml") -> AppConfig:
@@ -62,6 +72,13 @@ def load_config(path: str = "config.yaml") -> AppConfig:
 
     sqlite_raw = storage_raw.get("sqlite", {})
 
+    # Parse OAuth providers
+    oauth_raw = raw.get("oauth_providers", {})
+    oauth_providers = {
+        name: OAuthProviderConfig(**provider_raw)
+        for name, provider_raw in oauth_raw.items()
+    }
+
     return AppConfig(
         server=ServerConfig(**server_raw),
         storage=StorageConfig(
@@ -70,4 +87,5 @@ def load_config(path: str = "config.yaml") -> AppConfig:
         ),
         sessions=SessionsConfig(**sessions_raw),
         rate_limit=RateLimitConfig(**rate_limit_raw),
+        oauth_providers=oauth_providers,
     )

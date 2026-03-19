@@ -13,6 +13,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+oauth = [
+    "authlib>=1.3.0",
+]
 examples = [
     "cryptography>=43.0.0",
     "rich>=13.0.0",

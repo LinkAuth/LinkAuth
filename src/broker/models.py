@@ -16,6 +16,11 @@ class SessionStatus(str, Enum):
     EXPIRED = "expired"
 
 
+class TemplateType(str, Enum):
+    FORM = "form"    # user fills in fields manually
+    OAUTH = "oauth"  # user is redirected to an OAuth provider
+
+
 @dataclass
 class FieldDefinition:
     name: str
@@ -26,10 +31,27 @@ class FieldDefinition:
 
 
 @dataclass
+class OAuthProviderConfig:
+    """OAuth provider connection details — defined once, reused by templates."""
+    provider_id: str
+    auth_url: str
+    token_url: str
+    client_id: str
+    client_secret: str
+    # Optional: some providers need extra params
+    userinfo_url: str | None = None
+
+
+@dataclass
 class CredentialTemplate:
     template_id: str
     display_name: str
-    fields: list[FieldDefinition]
+    template_type: TemplateType = TemplateType.FORM
+    # For FORM templates: which fields to collect
+    fields: list[FieldDefinition] = field(default_factory=list)
+    # For OAUTH templates: which provider + scopes
+    oauth_provider: str | None = None  # references OAuthProviderConfig.provider_id
+    oauth_scopes: list[str] = field(default_factory=list)
     builtin: bool = True
 
 

@@ -12,6 +12,7 @@ from broker.models import (
     FieldDefinition,
     Session,
     SessionStatus,
+    TemplateType,
 )
 
 _CREATE_SESSIONS = """
@@ -53,11 +54,14 @@ def _template_to_json(t: CredentialTemplate) -> str:
     return json.dumps({
         "template_id": t.template_id,
         "display_name": t.display_name,
+        "template_type": t.template_type.value,
         "fields": [
             {"name": f.name, "label": f.label, "type": f.type,
              "required": f.required, "options": f.options}
             for f in t.fields
         ],
+        "oauth_provider": t.oauth_provider,
+        "oauth_scopes": t.oauth_scopes,
         "builtin": t.builtin,
     })
 
@@ -67,7 +71,10 @@ def _json_to_template(raw: str) -> CredentialTemplate:
     return CredentialTemplate(
         template_id=d["template_id"],
         display_name=d["display_name"],
-        fields=[FieldDefinition(**f) for f in d["fields"]],
+        template_type=TemplateType(d.get("template_type", "form")),
+        fields=[FieldDefinition(**f) for f in d.get("fields", [])],
+        oauth_provider=d.get("oauth_provider"),
+        oauth_scopes=d.get("oauth_scopes", []),
         builtin=d.get("builtin", False),
     )
 

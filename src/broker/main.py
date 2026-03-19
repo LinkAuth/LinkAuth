@@ -14,7 +14,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from broker.api import router
 from broker.config import AppConfig, load_config
 from broker.dao.sqlite import SqliteSessionDAO, SqliteTemplateDAO
-from broker.templates import BUILTIN_TEMPLATES
+from broker.templates import ALL_BUILTIN_TEMPLATES
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("linkauth")
@@ -44,7 +44,7 @@ async def lifespan(app: FastAPI):
     await template_dao.init()
 
     # Seed built-in templates
-    for tpl in BUILTIN_TEMPLATES.values():
+    for tpl in ALL_BUILTIN_TEMPLATES.values():
         await template_dao.register(tpl)
 
     app.state.session_dao = session_dao

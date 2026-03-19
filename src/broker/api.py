@@ -65,6 +65,8 @@ class CreateSessionRequest(BaseModel):
     template: str | None = None
     display_name: str | None = None
     fields: list[FieldSchema] | None = None
+    oauth_provider: str | None = None
+    oauth_scopes: list[str] | None = None
     callback_url: str | None = None
     ttl: int | None = None
 
@@ -104,10 +106,12 @@ class SecurityInfo(BaseModel):
 class SessionInfoResponse(BaseModel):
     status: str
     display_name: str
+    template_type: str  # "form" or "oauth"
     code: str
-    fields: list[dict[str, Any]]
+    fields: list[dict[str, Any]]  # for form templates
     public_key: str
     security: SecurityInfo
+    oauth_url: str | None = None  # for oauth templates: redirect URL
 
 
 # ---------------------------------------------------------------------------
@@ -169,6 +173,8 @@ async def create_session(
             body.template,
             body.display_name,
             [f.model_dump() for f in body.fields] if body.fields else None,
+            oauth_provider=body.oauth_provider,
+            oauth_scopes=body.oauth_scopes,
         )
     except ValueError as e:
         return problem_response(
@@ -297,6 +303,7 @@ async def get_session_info(
     return SessionInfoResponse(
         status=session.status.value,
         display_name=session.template.display_name,
+        template_type=session.template.template_type.value,
         code=session.code,
         fields=[
             {"name": f.name, "label": f.label, "type": f.type,
@@ -305,6 +312,7 @@ async def get_session_info(
         ],
         public_key=session.public_key,
         security=_detect_security(request),
+        # OAuth URL will be populated when OAuth flow is implemented
     )
 
 

@@ -17,3 +17,29 @@ sessions:
 
 rate_limit:
   max_sessions_per_minute: 10
+
+# OAuth providers — define connection details once, reuse across templates.
+# Templates like "google_mail" or "github" reference these by provider ID.
+# Uncomment and fill in to enable OAuth flows.
+#
+# oauth_providers:
+#   google:
+#     auth_url: "https://accounts.google.com/o/oauth2/v2/auth"
+#     token_url: "https://oauth2.googleapis.com/token"
+#     client_id: "your-client-id.apps.googleusercontent.com"
+#     client_secret: "GOCSPX-your-secret"
+#   microsoft:
+#     auth_url: "https://login.microsoftonline.com/common/oauth2/v2.0/authorize"
+#     token_url: "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+#     client_id: "your-client-id"
+#     client_secret: "your-secret"
+#   github:
+#     auth_url: "https://github.com/login/oauth/authorize"
+#     token_url: "https://github.com/login/oauth/access_token"
+#     client_id: "your-client-id"
+#     client_secret: "your-secret"
+#   slack:
+#     auth_url: "https://slack.com/oauth/v2/authorize"
+#     token_url: "https://slack.com/api/oauth.v2.access"
+#     client_id: "your-client-id"
+#     client_secret: "your-secret"
