@@ -42,7 +42,9 @@ class RateLimitConfig:
 @dataclass
 class OAuthProviderConfig:
     provider_id: str = ""
-    # URLs — auto-discovered for known providers, manual for custom ones
+    # OIDC Discovery — set issuer to auto-discover auth_url + token_url
+    issuer: str | None = None
+    # URLs — auto-discovered via loginpass/OIDC, or set manually for custom providers
     auth_url: str | None = None
     token_url: str | None = None
     userinfo_url: str | None = None
@@ -84,6 +86,7 @@ def load_config(path: str = "config.yaml") -> AppConfig:
         env_prefix = f"OAUTH_{name.upper()}"
         oauth_providers[name] = OAuthProviderConfig(
             provider_id=name,
+            issuer=provider_raw.get("issuer"),
             auth_url=provider_raw.get("auth_url"),
             token_url=provider_raw.get("token_url"),
             userinfo_url=provider_raw.get("userinfo_url"),

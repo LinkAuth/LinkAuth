@@ -15,6 +15,7 @@ from broker.models import Session, SessionStatus, TemplateType
 from broker.oauth import (
     OAuthSession,
     build_authorization_url,
+    encrypt_for_agent,
     exchange_token,
     generate_pkce,
     resolve_provider,
@@ -491,40 +492,8 @@ async def oauth_callback(
     # Encrypt token with agent's public key (server-side encryption)
     # The broker briefly sees the tokens in plaintext — this is the documented
     # OAuth zero-knowledge caveat.
-    import base64
-    import json
-    from cryptography.hazmat.primitives import hashes, serialization
-    from cryptography.hazmat.primitives.asymmetric import padding
-    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-    import secrets as _secrets
-
     try:
-        # Load agent's public key
-        pub_key_der = base64.b64decode(session.public_key)
-        public_key = serialization.load_der_public_key(pub_key_der)
-
-        # Hybrid encryption (same as crypto.js does in the browser)
-        aes_key = AESGCM.generate_key(bit_length=256)
-        iv = _secrets.token_bytes(12)
-        aesgcm = AESGCM(aes_key)
-        plaintext = json.dumps(token).encode()
-        ciphertext = aesgcm.encrypt(iv, plaintext, None)
-
-        wrapped_key = public_key.encrypt(
-            aes_key,
-            padding.OAEP(
-                mgf=padding.MGF1(algorithm=hashes.SHA256()),
-                algorithm=hashes.SHA256(),
-                label=None,
-            ),
-        )
-
-        payload = {
-            "wrapped_key": base64.b64encode(wrapped_key).decode(),
-            "iv": base64.b64encode(iv).decode(),
-            "ciphertext": base64.b64encode(ciphertext).decode(),
-        }
-        ciphertext_b64 = base64.b64encode(json.dumps(payload).encode()).decode()
+        ciphertext_b64 = encrypt_for_agent(token, session.public_key)
     except Exception as exc:
         return problem_response(
             500,

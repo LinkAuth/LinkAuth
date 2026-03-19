@@ -21,38 +21,32 @@ rate_limit:
 # OAuth providers — define connection details once, reused across templates.
 # Templates like "google_mail" or "github" reference these by provider ID.
 #
-# Credentials are NEVER stored here — they are loaded from environment variables
-# using the convention:
+# Provider resolution (in order):
+#   1. Explicit auth_url + token_url from this file (overrides everything)
+#   2. loginpass predefined providers (Google, GitHub, Slack, Discord, Spotify, ...)
+#   3. OIDC Discovery via issuer URL (/.well-known/openid-configuration)
 #
+# Credentials are NEVER stored here — they are loaded from environment variables:
 #   OAUTH_{PROVIDER}_CLIENT_ID
 #   OAUTH_{PROVIDER}_CLIENT_SECRET
 #
-# For example, to enable Google OAuth:
-#
-#   1. Set environment variables (or add to .env):
-#      OAUTH_GOOGLE_CLIENT_ID=123...apps.googleusercontent.com
-#      OAUTH_GOOGLE_CLIENT_SECRET=GOCSPX-...
-#
-#   2. Enable the provider here (no config needed for known providers):
-#      oauth_providers:
-#        google: {}
-#
-# Known providers (auth_url + token_url auto-discovered via loginpass/OIDC):
-#   google, microsoft, github, slack, gitlab, discord, spotify, ...
-#
-# For known providers, this section is only needed to override defaults.
-# For custom/corporate providers, specify auth_url + token_url here:
+# Examples:
 #
 # oauth_providers:
-#   google: {}                             # known provider, no config needed
-#   github: {}                             # known provider, no config needed
-#   microsoft:                             # known provider, override tenant
+#   google: {}                             # loginpass knows Google — zero config
+#   github: {}                             # loginpass knows GitHub — zero config
+#   auth0:                                 # OIDC Discovery via issuer
+#     issuer: "https://your-tenant.us.auth0.com"
+#   microsoft:                             # override loginpass defaults (e.g. tenant)
 #     auth_url: "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize"
 #     token_url: "https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
-#   corp_sso:                              # custom provider, full config required
+#   corp_sso:                              # custom provider, full config
 #     auth_url: "https://sso.corp.com/oauth2/authorize"
 #     token_url: "https://sso.corp.com/oauth2/token"
-#     # Credentials: set OAUTH_CORP_SSO_CLIENT_ID and OAUTH_CORP_SSO_CLIENT_SECRET in .env
+#
+# For all providers, set credentials in .env (see .env.example):
+#   OAUTH_GOOGLE_CLIENT_ID=...
+#   OAUTH_GOOGLE_CLIENT_SECRET=...
 
 oauth_providers:
   google: {}
