@@ -87,7 +87,7 @@
     </div>
   </div>
 
-  <!-- Step 2: Credential form -->
+  <!-- Step 2a: Credential form (for FORM templates) -->
   <div id="view-credentials" class="hidden w-full max-w-md">
     <div class="bg-white shadow-lg rounded-2xl p-8">
       <!-- Header -->
@@ -120,6 +120,37 @@
     </div>
   </div>
 
+  <!-- Step 2b: OAuth redirect (for OAUTH templates) -->
+  <div id="view-oauth" class="hidden w-full max-w-md">
+    <div class="bg-white shadow-lg rounded-2xl p-8">
+      <div class="text-center mb-8">
+        <div class="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-green-100 mb-4">
+          <svg class="h-6 w-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75 11.25 15 15 9.75M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0Z" />
+          </svg>
+        </div>
+        <h1 class="text-xl font-bold text-gray-900">Connect to <span id="oauth-service" class="text-brand-600"></span></h1>
+        <p class="mt-1 text-sm text-green-600 font-medium">Code verified</p>
+      </div>
+
+      <p class="text-sm text-gray-500 text-center mb-6">
+        You will be redirected to <span id="oauth-provider-name" class="font-medium text-gray-700"></span> to authorize access. Your tokens are encrypted before being stored.
+      </p>
+
+      <a
+        id="btn-oauth"
+        href="#"
+        class="block w-full rounded-xl bg-brand-600 px-4 py-3 text-sm font-semibold text-white shadow-sm hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-brand-600 focus:ring-offset-2 transition-colors text-center"
+      >
+        Continue with <span id="oauth-btn-label"></span>
+      </a>
+
+      <p class="mt-4 text-center text-xs text-gray-400">
+        The broker encrypts your OAuth tokens with the agent's public key after receiving them. See the security docs for details.
+      </p>
+    </div>
+  </div>
+
   <!-- Step 3: Success -->
   <div id="view-success" class="hidden text-center max-w-sm">
     <div class="bg-white shadow-lg rounded-2xl p-8">
@@ -145,7 +176,7 @@
   // Views
   // ---------------------------------------------------------------------------
   function showView(id) {
-    for (const v of ["view-loading", "view-error", "view-confirm", "view-credentials", "view-success"]) {
+    for (const v of ["view-loading", "view-error", "view-confirm", "view-credentials", "view-oauth", "view-success"]) {
       document.getElementById(v).classList.toggle("hidden", v !== id);
     }
   }
@@ -175,6 +206,13 @@
     }
     sessionCode = match[1];
 
+    // Check for OAuth success redirect: /connect/CODE?status=success
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("status") === "success") {
+      showView("view-success");
+      return;
+    }
+
     try {
       const resp = await fetch(`${API_BASE}/connect/${sessionCode}`);
       if (!resp.ok) {
@@ -188,8 +226,7 @@
       showSecurityBanner(sessionData.security);
 
       if (sessionData.status === "confirmed") {
-        renderCredentialForm();
-        showView("view-credentials");
+        showStep2();
       } else {
         document.getElementById("confirm-service").textContent = sessionData.display_name;
         document.getElementById("confirm-code").textContent = sessionData.code;
@@ -197,6 +234,21 @@
       }
     } catch (e) {
       showError("Could not connect to the broker. Please try again.");
+    }
+  }
+
+  function showStep2() {
+    if (sessionData.template_type === "oauth") {
+      // OAuth flow — show "Connect with Provider" button
+      document.getElementById("oauth-service").textContent = sessionData.display_name;
+      document.getElementById("oauth-provider-name").textContent = sessionData.display_name;
+      document.getElementById("oauth-btn-label").textContent = sessionData.display_name;
+      document.getElementById("btn-oauth").href = `${API_BASE}/oauth/authorize/${sessionCode}`;
+      showView("view-oauth");
+    } else {
+      // Form flow — show credential input fields
+      renderCredentialForm();
+      showView("view-credentials");
     }
   }
 
@@ -215,8 +267,7 @@
         showError(err.detail || "Failed to confirm code.");
         return;
       }
-      renderCredentialForm();
-      showView("view-credentials");
+      showStep2();
     } catch (e) {
       showError("Connection error. Please try again.");
     }

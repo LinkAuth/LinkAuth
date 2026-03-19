@@ -6,12 +6,19 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
 from broker.callback import deliver_callback
 from broker.dao.base import SessionDAO
-from broker.models import Session, SessionStatus
+from broker.models import Session, SessionStatus, TemplateType
+from broker.oauth import (
+    OAuthSession,
+    build_authorization_url,
+    exchange_token,
+    generate_pkce,
+    resolve_provider,
+)
 from broker.templates import resolve_template
 
 router = APIRouter(prefix="/v1")
@@ -183,6 +190,20 @@ async def create_session(
             detail=str(e),
         )
 
+    # Validate OAuth provider if this is an OAuth template
+    if tpl.template_type == TemplateType.OAUTH and tpl.oauth_provider:
+        try:
+            resolve_provider(tpl.oauth_provider, config.oauth_providers)
+        except ValueError as e:
+            detail = str(e)
+            # Distinguish between "not registered" (400) and "no credentials" (503)
+            if "not registered" in detail:
+                return problem_response(400, "OAuth Provider Unknown", detail)
+            elif "missing credentials" in detail:
+                return problem_response(503, "OAuth Provider Not Configured", detail)
+            else:
+                return problem_response(400, "OAuth Provider Error", detail)
+
     ttl = min(body.ttl or config.sessions.default_ttl, config.sessions.max_ttl)
     now = datetime.now(timezone.utc)
 
@@ -353,3 +374,179 @@ async def complete_session(
         background.add_task(
             deliver_callback, session.callback_url, session.session_id, body.ciphertext
         )
+
+
+# ---------------------------------------------------------------------------
+# OAuth endpoints
+# ---------------------------------------------------------------------------
+
+# In-memory PKCE state (maps state param -> OAuthSession)
+# In production, this should be stored in the DAO layer.
+_oauth_sessions: dict[str, OAuthSession] = {}
+
+
+@router.get("/oauth/authorize/{code}")
+async def oauth_authorize(
+    code: str,
+    dao: SessionDAO = Depends(get_session_dao),
+    config=Depends(get_config),
+):
+    """Redirect user to OAuth provider after code confirmation.
+
+    Called by the frontend when user clicks "Connect with <Provider>".
+    Generates PKCE challenge and redirects to the provider's auth URL.
+    """
+    session = await dao.get_by_code(code)
+    if not session:
+        return problem_response(404, "Session Not Found", "Session not found or expired.")
+    if session.status not in (SessionStatus.PENDING, SessionStatus.CONFIRMED):
+        return problem_response(409, "Session Not Completable", "Session is not in a completable state.")
+    if session.template.template_type != TemplateType.OAUTH or not session.template.oauth_provider:
+        return problem_response(400, "Not an OAuth Session", "This session does not use OAuth.")
+
+    try:
+        provider = resolve_provider(session.template.oauth_provider, config.oauth_providers)
+    except ValueError as e:
+        return problem_response(503, "OAuth Provider Error", str(e))
+
+    # Generate PKCE (RFC 7636)
+    code_verifier, code_challenge = generate_pkce()
+
+    # Use session_id as state to map callback back to this session
+    state = session.session_id
+    _oauth_sessions[state] = OAuthSession(
+        code_verifier=code_verifier,
+        state=state,
+    )
+
+    redirect_uri = f"{config.server.base_url}/v1/oauth/callback"
+    auth_url = build_authorization_url(
+        provider=provider,
+        redirect_uri=redirect_uri,
+        scopes=session.template.oauth_scopes,
+        state=state,
+        code_challenge=code_challenge,
+    )
+
+    # Mark session as confirmed (user initiated OAuth flow)
+    if session.status == SessionStatus.PENDING:
+        await dao.update_status(session.session_id, SessionStatus.CONFIRMED)
+
+    return RedirectResponse(url=auth_url, status_code=302)
+
+
+@router.get("/oauth/callback")
+async def oauth_callback(
+    state: str | None = None,
+    code: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+    background: BackgroundTasks = None,
+    dao: SessionDAO = Depends(get_session_dao),
+    config=Depends(get_config),
+):
+    """OAuth provider redirects back here after user authorization.
+
+    Exchanges the authorization code for tokens, encrypts them with
+    the agent's public key, and stores the ciphertext.
+    """
+    # Handle provider errors
+    if error:
+        detail = error_description or error
+        return problem_response(400, "OAuth Authorization Failed", f"Provider returned error: {detail}")
+
+    if not state or not code:
+        return problem_response(400, "Invalid Callback", "Missing state or code parameter.")
+
+    # Look up PKCE session
+    oauth_session = _oauth_sessions.pop(state, None)
+    if not oauth_session:
+        return problem_response(400, "Invalid State", "OAuth state parameter not recognized. Session may have expired.")
+
+    # Look up LinkAuth session via state (= session_id)
+    session = await dao.get(state)
+    if not session:
+        return problem_response(404, "Session Not Found", "LinkAuth session not found or expired.")
+
+    if not session.template.oauth_provider:
+        return problem_response(400, "Not an OAuth Session", "This session does not use OAuth.")
+
+    try:
+        provider = resolve_provider(session.template.oauth_provider, config.oauth_providers)
+    except ValueError as e:
+        return problem_response(503, "OAuth Provider Error", str(e))
+
+    # Exchange code for tokens (RFC 6749 + RFC 7636 PKCE)
+    redirect_uri = f"{config.server.base_url}/v1/oauth/callback"
+    try:
+        token = await exchange_token(
+            provider=provider,
+            redirect_uri=redirect_uri,
+            authorization_code=code,
+            code_verifier=oauth_session.code_verifier,
+        )
+    except ValueError as e:
+        return problem_response(502, "OAuth Token Exchange Failed", str(e))
+
+    # Encrypt token with agent's public key (server-side encryption)
+    # The broker briefly sees the tokens in plaintext — this is the documented
+    # OAuth zero-knowledge caveat.
+    import base64
+    import json
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    import secrets as _secrets
+
+    try:
+        # Load agent's public key
+        pub_key_der = base64.b64decode(session.public_key)
+        public_key = serialization.load_der_public_key(pub_key_der)
+
+        # Hybrid encryption (same as crypto.js does in the browser)
+        aes_key = AESGCM.generate_key(bit_length=256)
+        iv = _secrets.token_bytes(12)
+        aesgcm = AESGCM(aes_key)
+        plaintext = json.dumps(token).encode()
+        ciphertext = aesgcm.encrypt(iv, plaintext, None)
+
+        wrapped_key = public_key.encrypt(
+            aes_key,
+            padding.OAEP(
+                mgf=padding.MGF1(algorithm=hashes.SHA256()),
+                algorithm=hashes.SHA256(),
+                label=None,
+            ),
+        )
+
+        payload = {
+            "wrapped_key": base64.b64encode(wrapped_key).decode(),
+            "iv": base64.b64encode(iv).decode(),
+            "ciphertext": base64.b64encode(ciphertext).decode(),
+        }
+        ciphertext_b64 = base64.b64encode(json.dumps(payload).encode()).decode()
+    except Exception as exc:
+        return problem_response(
+            500,
+            "Encryption Failed",
+            f"Failed to encrypt OAuth tokens with agent's public key: {exc}",
+        )
+
+    # Store encrypted tokens
+    ok = await dao.store_ciphertext(
+        session.session_id, ciphertext_b64, "RSA-OAEP-256+AES-256-GCM"
+    )
+    if not ok:
+        return problem_response(500, "Storage Error", "Failed to store encrypted tokens.")
+
+    # Trigger callback if configured
+    if session.callback_url and background:
+        background.add_task(
+            deliver_callback, session.callback_url, session.session_id, ciphertext_b64
+        )
+
+    # Redirect user to a success page
+    return RedirectResponse(
+        url=f"{config.server.base_url}/connect/{session.code}?status=success",
+        status_code=302,
+    )
