@@ -62,7 +62,7 @@ Experience the full flow in under 2 minutes. The included agent simulation uses 
 ### 1. Install & Start the Broker
 
 ```bash
-git clone https://github.com/your-org/linkauth.git
+git clone https://github.com/LinkAuth/LinkAuth.git
 cd linkauth
 uv sync --all-extras
 
@@ -267,6 +267,7 @@ LinkAuth is built on established IETF standards:
 | [RFC 8628](https://datatracker.ietf.org/doc/html/rfc8628) -- OAuth 2.0 Device Authorization Grant | URL + Code + Polling UX, `interval` hint, `slow_down` (429) error | Implemented |
 | [RFC 8017](https://datatracker.ietf.org/doc/html/rfc8017) -- PKCS #1 (RSA-OAEP) | Asymmetric encryption for AES key wrapping | Implemented |
 | [RFC 5116](https://datatracker.ietf.org/doc/html/rfc5116) -- AES-GCM Authenticated Encryption | Symmetric encryption for credential payloads | Implemented |
+| [RFC 6750](https://datatracker.ietf.org/doc/html/rfc6750) -- OAuth 2.0 Bearer Token Usage | Session poll tokens issued and verified as Bearer tokens | Implemented |
 | [RFC 9457](https://datatracker.ietf.org/doc/html/rfc9457) -- Problem Details for HTTP APIs | All API errors returned as `application/problem+json` | Implemented |
 | [RFC 8446](https://datatracker.ietf.org/doc/html/rfc8446) -- TLS 1.3 | Transport security via reverse proxy (Caddy), HSTS header | Via deployment |
 | [RFC 6797](https://datatracker.ietf.org/doc/html/rfc6797) -- HTTP Strict Transport Security | HSTS header auto-added when TLS is detected | Implemented |
@@ -277,9 +278,8 @@ LinkAuth is built on established IETF standards:
 
 The IETF is actively working on standards for AI agent authentication -- LinkAuth aligns with these emerging specifications:
 
-- **draft-oauth-ai-agents-on-behalf-of-user** -- OAuth 2.0 Extension for AI agent delegation
+- **draft-klrc-aiagent-auth** (2026-03) -- AI Agent Authentication and Authorization. Authors from AWS, Zscaler, Ping Identity. Builds on the WIMSE framework.
 - **draft-rosenberg-oauth-aauth** -- AAuth: Agentic Authorization OAuth 2.1 Extension
-- **draft-klrc-aiagent-auth** -- AI Agent Authentication and Authorization
 
 ## Architecture
 

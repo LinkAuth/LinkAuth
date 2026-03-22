@@ -112,6 +112,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Health check (outside /v1 prefix — used by Docker/Coolify)
+    @app.get("/health")
+    async def health():
+        return {"status": "ok"}
+
     # API routes
     app.include_router(router)
 

@@ -109,6 +109,12 @@ def load_config(path: str = "config.yaml") -> AppConfig:
     # Merge: env keys first, then YAML keys (deduplicated)
     all_api_keys = list(dict.fromkeys(api_keys_from_env + api_keys_from_yaml))
 
+    # base_url: env var takes precedence (required for Docker/Coolify deployment)
+    # Coolify injects SERVICE_FQDN_LINKAUTH with the public URL
+    env_base_url = os.environ.get("LINKAUTH_BASE_URL") or os.environ.get("SERVICE_FQDN_LINKAUTH") or ""
+    if env_base_url:
+        server_raw["base_url"] = env_base_url.rstrip("/")
+
     return AppConfig(
         server=ServerConfig(**server_raw),
         storage=StorageConfig(
