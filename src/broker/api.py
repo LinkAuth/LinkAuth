@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import hmac
+
+logger = logging.getLogger("linkauth.api")
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -50,6 +53,7 @@ def problem_response(
     extra: dict | None = None,
 ) -> JSONResponse:
     """Return an RFC 9457 application/problem+json error response."""
+    logger.warning("problem status=%d title=%s detail=%s", status, title, detail)
     body = {
         "type": error_type,
         "title": title,
@@ -160,6 +164,7 @@ def require_api_key(request: Request):
 
     provided_key = request.headers.get("X-API-Key", "")
     if not provided_key:
+        logger.warning("auth.api_key.missing path=%s client=%s", request.url.path, request.client.host if request.client else "unknown")
         raise HTTPException(
             status_code=401,
             detail={
@@ -172,6 +177,7 @@ def require_api_key(request: Request):
 
     # Constant-time comparison against all configured keys
     if not any(hmac.compare_digest(provided_key, key) for key in api_keys):
+        logger.warning("auth.api_key.invalid path=%s client=%s", request.url.path, request.client.host if request.client else "unknown")
         raise HTTPException(
             status_code=403,
             detail={
