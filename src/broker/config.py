@@ -113,7 +113,10 @@ def load_config(path: str = "config.yaml") -> AppConfig:
     # Coolify injects SERVICE_FQDN_LINKAUTH with the public URL
     env_base_url = os.environ.get("LINKAUTH_BASE_URL") or os.environ.get("SERVICE_FQDN_LINKAUTH") or ""
     if env_base_url:
-        server_raw["base_url"] = env_base_url.rstrip("/")
+        env_base_url = env_base_url.rstrip("/")
+        if not env_base_url.startswith(("http://", "https://")):
+            env_base_url = f"https://{env_base_url}"
+        server_raw["base_url"] = env_base_url
 
     return AppConfig(
         server=ServerConfig(**server_raw),
