@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from broker.callback import deliver_callback
 from broker.dao.base import SessionDAO
 from broker.models import Session, SessionStatus, TemplateType
+from broker.crypto import validate_public_key
 from broker.oauth import (
     OAuthSession,
     build_authorization_url,
@@ -224,6 +225,14 @@ async def create_session(
     config=Depends(get_config),
 ):
     """Agent creates a new credential session."""
+    key_error = validate_public_key(body.public_key)
+    if key_error:
+        return problem_response(
+            status=400,
+            title="Invalid Public Key",
+            detail=key_error,
+        )
+
     try:
         tpl = resolve_template(
             body.template,
