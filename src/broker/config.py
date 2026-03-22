@@ -35,6 +35,12 @@ class SessionsConfig:
 
 
 @dataclass
+class SecurityConfig:
+    """API key authentication for agent-facing endpoints."""
+    api_keys: list[str] = field(default_factory=list)
+
+
+@dataclass
 class RateLimitConfig:
     max_sessions_per_minute: int = 10
 
@@ -58,6 +64,7 @@ class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
     sessions: SessionsConfig = field(default_factory=SessionsConfig)
+    security: SecurityConfig = field(default_factory=SecurityConfig)
     rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
     oauth_providers: dict[str, OAuthProviderConfig] = field(default_factory=dict)
 
@@ -74,6 +81,7 @@ def load_config(path: str = "config.yaml") -> AppConfig:
     server_raw = raw.get("server", {})
     storage_raw = raw.get("storage", {})
     sessions_raw = raw.get("sessions", {})
+    security_raw = raw.get("security", {})
     rate_limit_raw = raw.get("rate_limit", {})
 
     sqlite_raw = storage_raw.get("sqlite", {})
@@ -94,6 +102,13 @@ def load_config(path: str = "config.yaml") -> AppConfig:
             client_secret=os.environ.get(f"{env_prefix}_CLIENT_SECRET", ""),
         )
 
+    # API keys: env var takes precedence, comma-separated list
+    env_api_keys = os.environ.get("LINKAUTH_API_KEYS", "")
+    api_keys_from_env = [k.strip() for k in env_api_keys.split(",") if k.strip()]
+    api_keys_from_yaml = security_raw.get("api_keys", []) or []
+    # Merge: env keys first, then YAML keys (deduplicated)
+    all_api_keys = list(dict.fromkeys(api_keys_from_env + api_keys_from_yaml))
+
     return AppConfig(
         server=ServerConfig(**server_raw),
         storage=StorageConfig(
@@ -101,6 +116,7 @@ def load_config(path: str = "config.yaml") -> AppConfig:
             sqlite=SqliteConfig(**sqlite_raw),
         ),
         sessions=SessionsConfig(**sessions_raw),
+        security=SecurityConfig(api_keys=all_api_keys),
         rate_limit=RateLimitConfig(**rate_limit_raw),
         oauth_providers=oauth_providers,
     )

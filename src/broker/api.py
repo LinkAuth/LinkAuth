@@ -6,6 +6,8 @@ import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import hmac
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
@@ -142,6 +144,44 @@ def get_config(request: Request):
     return request.app.state.config
 
 
+def require_api_key(request: Request):
+    """Validate X-API-Key header against configured API keys.
+
+    If no API keys are configured, access is unrestricted (development mode).
+    Uses constant-time comparison to prevent timing attacks.
+    """
+    config = request.app.state.config
+    api_keys = config.security.api_keys
+
+    # No keys configured → open access (development / single-tenant without auth)
+    if not api_keys:
+        return
+
+    provided_key = request.headers.get("X-API-Key", "")
+    if not provided_key:
+        raise HTTPException(
+            status_code=401,
+            detail={
+                "type": "about:blank",
+                "title": "API Key Required",
+                "status": 401,
+                "detail": "Missing X-API-Key header. Provide a valid API key to access this endpoint.",
+            },
+        )
+
+    # Constant-time comparison against all configured keys
+    if not any(hmac.compare_digest(provided_key, key) for key in api_keys):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "type": "about:blank",
+                "title": "Invalid API Key",
+                "status": 403,
+                "detail": "The provided API key is not valid.",
+            },
+        )
+
+
 def _detect_security(request: Request) -> SecurityInfo:
     """Detect TLS/security status from the request and config."""
     config = request.app.state.config
@@ -177,7 +217,7 @@ def _detect_security(request: Request) -> SecurityInfo:
 # Agent-facing endpoints
 # ---------------------------------------------------------------------------
 
-@router.post("/sessions", status_code=201, response_model=CreateSessionResponse)
+@router.post("/sessions", status_code=201, response_model=CreateSessionResponse, dependencies=[Depends(require_api_key)])
 async def create_session(
     body: CreateSessionRequest,
     dao: SessionDAO = Depends(get_session_dao),
@@ -245,7 +285,7 @@ async def create_session(
 _last_poll: dict[str, float] = {}
 
 
-@router.get("/sessions/{session_id}")
+@router.get("/sessions/{session_id}", dependencies=[Depends(require_api_key)])
 async def get_session(
     session_id: str,
     request: Request,

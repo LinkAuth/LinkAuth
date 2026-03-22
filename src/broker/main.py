@@ -59,6 +59,11 @@ async def lifespan(app: FastAPI):
         _cleanup_loop(session_dao, config.sessions.cleanup_interval)
     )
 
+    if config.security.api_keys:
+        logger.info("API key authentication enabled (%d key(s) configured)", len(config.security.api_keys))
+    else:
+        logger.warning("API key authentication DISABLED — agent endpoints are open. Set LINKAUTH_API_KEYS for production.")
+
     logger.info("LinkAuth broker started on %s:%d", config.server.host, config.server.port)
     yield
 

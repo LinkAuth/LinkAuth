@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from broker.config import load_config; c = load_config\\(\\); print\\(f''API keys: {c.security.api_keys}''\\)\")",
+      "Bash(uv run python -c \":*)",
+      "Bash(pip --version)",
+      "Bash(python -c \"import sys; print\\(sys.executable\\)\")",
+      "Bash(where uv:*)",
+      "Read(//c/Users/Wizard/.local/bin/**)",
+      "Read(//c/Users/Wizard/.cargo/bin/**)",
+      "Read(//c/Development/Projekte/LinkAuth/LinkAuth/$LOCALAPPDATA/uv/**)",
+      "Read(//c/Development/Projekte/LinkAuth/LinkAuth/$HOME/.local/bin/**)",
+      "Read(//c/Development/Projekte/LinkAuth/LinkAuth/$HOME/.cargo/bin/**)"
+    ]
+  }
+}

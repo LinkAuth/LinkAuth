@@ -15,6 +15,13 @@ sessions:
   code_length: 8            # e.g. "ABCD-1234"
   poll_interval: 5          # RFC 8628: recommended polling interval in seconds
 
+security:
+  # API keys for agent-facing endpoints (POST /v1/sessions, GET /v1/sessions/{id}).
+  # Agents must include: X-API-Key: <key> in their requests.
+  # If empty, API key auth is disabled (open access).
+  # Prefer LINKAUTH_API_KEYS env var for production (comma-separated).
+  api_keys: []
+
 rate_limit:
   max_sessions_per_minute: 10
 
