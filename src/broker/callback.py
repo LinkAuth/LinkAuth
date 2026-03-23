@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import logging
-
 import httpx
+import structlog
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 async def deliver_callback(
@@ -25,12 +24,15 @@ async def deliver_callback(
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(callback_url, json=payload)
             if resp.is_success:
-                logger.info("Callback delivered to %s", callback_url)
+                logger.info("callback.delivered",
+                            session_id=session_id, callback_url=callback_url)
                 return True
-            logger.warning(
-                "Callback to %s returned %d", callback_url, resp.status_code
-            )
+            logger.warning("callback.failed",
+                           session_id=session_id, callback_url=callback_url,
+                           status_code=resp.status_code)
             return False
     except httpx.HTTPError as exc:
-        logger.error("Callback to %s failed: %s", callback_url, exc)
+        logger.error("callback.error",
+                      session_id=session_id, callback_url=callback_url,
+                      error=str(exc))
         return False

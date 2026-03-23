@@ -16,8 +16,11 @@ services:
       - OAUTH_GITHUB_CLIENT_SECRET=${OAUTH_GITHUB_CLIENT_SECRET:-}
       - OAUTH_MICROSOFT_CLIENT_ID=${OAUTH_MICROSOFT_CLIENT_ID:-}
       - OAUTH_MICROSOFT_CLIENT_SECRET=${OAUTH_MICROSOFT_CLIENT_SECRET:-}
+      # Logging
+      - LINKAUTH_LOG_LEVEL=${LINKAUTH_LOG_LEVEL:-INFO}
     volumes:
       - linkauth-data:/app/data
+      - linkauth-logs:/app/logs
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
@@ -28,3 +31,4 @@ services:
 
 volumes:
   linkauth-data:
+  linkauth-logs:

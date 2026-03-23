@@ -13,10 +13,10 @@ COPY src/ ./src/
 COPY config.yaml entrypoint.sh ./
 RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh && uv sync --frozen --no-dev --extra oauth
 
-# Data directory for SQLite + non-root user
-RUN mkdir -p /app/data && \
+# Data + logs directories + non-root user
+RUN mkdir -p /app/data /app/logs && \
     adduser --disabled-password --no-create-home linkauth && \
-    chown -R linkauth:linkauth /app/data
+    chown -R linkauth:linkauth /app/data /app/logs
 
 USER linkauth
 

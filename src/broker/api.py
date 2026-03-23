@@ -1,15 +1,14 @@
 from __future__ import annotations
 
-import asyncio
-import logging
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import hmac
+import structlog
 
-logger = logging.getLogger("linkauth.api")
+logger = structlog.get_logger("linkauth.api")
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse, RedirectResponse
@@ -53,7 +52,7 @@ def problem_response(
     extra: dict | None = None,
 ) -> JSONResponse:
     """Return an RFC 9457 application/problem+json error response."""
-    logger.warning("problem status=%d title=%s detail=%s", status, title, detail)
+    logger.warning("problem", status_code=status, title=title, detail=detail)
     body = {
         "type": error_type,
         "title": title,
@@ -164,7 +163,7 @@ def require_api_key(request: Request):
 
     provided_key = request.headers.get("X-API-Key", "")
     if not provided_key:
-        logger.warning("auth.api_key.missing path=%s client=%s", request.url.path, request.client.host if request.client else "unknown")
+        logger.warning("auth.api_key.missing")
         raise HTTPException(
             status_code=401,
             detail={
@@ -177,7 +176,7 @@ def require_api_key(request: Request):
 
     # Constant-time comparison against all configured keys
     if not any(hmac.compare_digest(provided_key, key) for key in api_keys):
-        logger.warning("auth.api_key.invalid path=%s client=%s", request.url.path, request.client.host if request.client else "unknown")
+        logger.warning("auth.api_key.invalid")
         raise HTTPException(
             status_code=403,
             detail={
@@ -286,6 +285,18 @@ async def create_session(
     await dao.create(session)
 
     url = f"{config.server.base_url}/connect/{code}"
+
+    structlog.contextvars.bind_contextvars(
+        session_id=session.session_id,
+        code=code,
+        template_id=tpl.template_id,
+        template_type=tpl.template_type.value,
+        ttl=ttl,
+        has_callback=bool(body.callback_url),
+        oauth_provider=tpl.oauth_provider,
+    )
+    logger.info("session.created")
+
     return CreateSessionResponse(
         session_id=session.session_id,
         code=code,
@@ -312,6 +323,8 @@ async def get_session(
     - Returns `interval` hint for recommended polling frequency
     - Returns 429 with `slow_down` error if client polls too fast
     """
+    structlog.contextvars.bind_contextvars(session_id=session_id)
+
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
         return problem_response(
@@ -331,11 +344,17 @@ async def get_session(
             detail="Invalid poll_token.",
         )
 
+    structlog.contextvars.bind_contextvars(
+        session_status=session.status.value,
+        code=session.code,
+    )
+
     # RFC 8628 §3.5: slow_down — if client polls faster than interval
     poll_interval = _poll_interval(request)
     now = time.monotonic()
     last = _last_poll.get(session_id, 0.0)
     if now - last < poll_interval:
+        logger.warning("session.poll.slow_down", interval=poll_interval + 5)
         return problem_response(
             status=429,
             title="Slow Down",
@@ -349,14 +368,16 @@ async def get_session(
     if session.status == SessionStatus.READY:
         consumed = await dao.consume(session_id)
         if consumed:
-            # Clean up tracking
             _last_poll.pop(session_id, None)
+            logger.info("session.consumed")
             return SessionStatusResponse(
                 status="ready",
                 expires_at=consumed.expires_at.isoformat(),
                 ciphertext=consumed.ciphertext,
                 algorithm=consumed.algorithm,
             )
+
+    logger.debug("session.polled")
 
     return SessionStatusResponse(
         status=session.status.value,
@@ -381,16 +402,25 @@ async def get_session_info(
     Once CONFIRMED, the session is locked to the browser that confirmed it
     (via connect_token). Other browsers only see that confirmation happened.
     """
+    structlog.contextvars.bind_contextvars(code=code)
+
     session = await dao.get_by_code(code)
     if not session:
+        logger.warning("connect.not_found")
         return _session_not_found()
     if session.status not in (SessionStatus.PENDING, SessionStatus.CONFIRMED):
         return problem_response(410, "Session Gone", "Session already completed.")
 
-    # After confirmation, behave as if the session doesn't exist.
-    # This prevents information leakage (attacker can't tell if a code is valid).
     if session.status == SessionStatus.CONFIRMED:
+        logger.warning("connect.not_found", reason="already_confirmed")
         return _session_not_found()
+
+    structlog.contextvars.bind_contextvars(
+        session_id=session.session_id,
+        template_type=session.template.template_type.value,
+        display_name=session.template.display_name,
+    )
+    logger.info("connect.info")
 
     return SessionInfoResponse(
         status=session.status.value,
@@ -417,18 +447,23 @@ async def confirm_code(
     After confirmation, the code cannot be used again. All subsequent
     operations (OAuth redirect, form submit) require the connect_token.
     """
+    structlog.contextvars.bind_contextvars(code=code)
+
     session = await dao.get_by_code(code)
     if not session:
         return _session_not_found()
     if session.status != SessionStatus.PENDING:
         return problem_response(409, "Already Confirmed", "Session has already been confirmed.")
 
-    # Issue a one-time connect_token — this replaces the code for Step 2
     connect_token = f"ct_{secrets.token_urlsafe(32)}"
     await dao.update_status(
         session.session_id, SessionStatus.CONFIRMED,
         connect_token=connect_token,
     )
+
+    structlog.contextvars.bind_contextvars(session_id=session.session_id)
+    logger.info("connect.confirmed")
+
     return ConfirmSessionResponse(connect_token=connect_token)
 
 
@@ -440,6 +475,8 @@ async def complete_session(
     dao: SessionDAO = Depends(get_session_dao),
 ):
     """Frontend submits encrypted credentials. Requires connect_token."""
+    structlog.contextvars.bind_contextvars(code=code)
+
     session = await dao.get_by_code(code)
     if not session:
         return _session_not_found()
@@ -454,6 +491,13 @@ async def complete_session(
     ok = await dao.store_ciphertext(session.session_id, body.ciphertext, body.algorithm)
     if not ok:
         return problem_response(500, "Storage Error", "Failed to store encrypted credentials.")
+
+    structlog.contextvars.bind_contextvars(
+        session_id=session.session_id,
+        algorithm=body.algorithm,
+        has_callback=bool(session.callback_url),
+    )
+    logger.info("connect.completed")
 
     if session.callback_url:
         background.add_task(
@@ -482,6 +526,8 @@ async def oauth_authorize(
     Called by the frontend when user clicks "Connect with <Provider>".
     Requires connect_token issued during code confirmation.
     """
+    structlog.contextvars.bind_contextvars(code=code)
+
     session = await dao.get_by_code(code)
     if not session:
         return _session_not_found()
@@ -498,15 +544,18 @@ async def oauth_authorize(
     if session.template.template_type != TemplateType.OAUTH or not session.template.oauth_provider:
         return problem_response(400, "Not an OAuth Session", "This session does not use OAuth.")
 
+    structlog.contextvars.bind_contextvars(
+        session_id=session.session_id,
+        oauth_provider=session.template.oauth_provider,
+    )
+
     try:
         provider = resolve_provider(session.template.oauth_provider, config.oauth_providers)
     except ValueError as e:
         return problem_response(503, "OAuth Provider Error", str(e))
 
-    # Generate PKCE (RFC 7636) — fresh for every attempt
     code_verifier, code_challenge = generate_pkce()
 
-    # Use session_id as state to map callback back to this session
     state = session.session_id
     _oauth_sessions[state] = OAuthSession(
         code_verifier=code_verifier,
@@ -522,6 +571,8 @@ async def oauth_authorize(
         code_challenge=code_challenge,
         extra_params=session.template.oauth_extra_params,
     )
+
+    logger.info("oauth.authorize")
 
     return RedirectResponse(url=auth_url, status_code=302)
 
@@ -541,6 +592,9 @@ async def oauth_callback(
     Exchanges the authorization code for tokens, encrypts them with
     the agent's public key, and stores the ciphertext.
     """
+    if state:
+        structlog.contextvars.bind_contextvars(session_id=state)
+
     # Handle provider errors — reset session to PENDING so code must be re-confirmed
     if error:
         detail = error_description or error
@@ -549,17 +603,19 @@ async def oauth_callback(
             session = await dao.get(state)
             if session:
                 await dao.update_status(session.session_id, SessionStatus.PENDING)
+                structlog.contextvars.bind_contextvars(
+                    oauth_provider=session.template.oauth_provider,
+                )
+        logger.warning("oauth.callback.error", oauth_error=error, oauth_error_description=error_description)
         return problem_response(400, "OAuth Authorization Failed", f"Provider returned error: {detail}")
 
     if not state or not code:
         return problem_response(400, "Invalid Callback", "Missing state or code parameter.")
 
-    # Look up PKCE session
     oauth_session = _oauth_sessions.pop(state, None)
     if not oauth_session:
         return problem_response(400, "Invalid State", "OAuth state parameter not recognized. Session may have expired.")
 
-    # Look up LinkAuth session via state (= session_id)
     session = await dao.get(state)
     if not session:
         return problem_response(404, "Session Not Found", "LinkAuth session not found or expired.")
@@ -567,12 +623,16 @@ async def oauth_callback(
     if not session.template.oauth_provider:
         return problem_response(400, "Not an OAuth Session", "This session does not use OAuth.")
 
+    structlog.contextvars.bind_contextvars(
+        oauth_provider=session.template.oauth_provider,
+        code=session.code,
+    )
+
     try:
         provider = resolve_provider(session.template.oauth_provider, config.oauth_providers)
     except ValueError as e:
         return problem_response(503, "OAuth Provider Error", str(e))
 
-    # Exchange code for tokens (RFC 6749 + RFC 7636 PKCE)
     redirect_uri = f"{config.server.base_url}/v1/oauth/callback"
     try:
         token = await exchange_token(
@@ -582,13 +642,9 @@ async def oauth_callback(
             code_verifier=oauth_session.code_verifier,
         )
     except ValueError as e:
-        # Reset to PENDING — user must re-confirm code for next attempt
         await dao.update_status(session.session_id, SessionStatus.PENDING)
         return problem_response(502, "OAuth Token Exchange Failed", str(e))
 
-    # Encrypt token with agent's public key (server-side encryption)
-    # The broker briefly sees the tokens in plaintext — this is the documented
-    # OAuth zero-knowledge caveat.
     try:
         ciphertext_b64 = encrypt_for_agent(token, session.public_key)
     except Exception as exc:
@@ -598,20 +654,19 @@ async def oauth_callback(
             f"Failed to encrypt OAuth tokens with agent's public key: {exc}",
         )
 
-    # Store encrypted tokens
     ok = await dao.store_ciphertext(
         session.session_id, ciphertext_b64, "RSA-OAEP-256+AES-256-GCM"
     )
     if not ok:
         return problem_response(500, "Storage Error", "Failed to store encrypted tokens.")
 
-    # Trigger callback if configured
     if session.callback_url and background:
         background.add_task(
             deliver_callback, session.callback_url, session.session_id, ciphertext_b64
         )
 
-    # Redirect user to a success page
+    logger.info("oauth.callback.success")
+
     return RedirectResponse(
         url=f"{config.server.base_url}/connect/{session.code}?status=success",
         status_code=302,
