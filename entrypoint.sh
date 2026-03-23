@@ -1,6 +1,9 @@
 #!/bin/sh
 set -e
 
+# Fix ownership of mounted volumes (runs as root)
+chown -R linkauth:linkauth /app/data /app/logs
+
 if [ -z "$LINKAUTH_API_KEYS" ]; then
     LINKAUTH_API_KEYS=$(.venv/bin/python -c "import secrets; print(secrets.token_urlsafe(32))")
     export LINKAUTH_API_KEYS
@@ -15,4 +18,5 @@ if [ -z "$LINKAUTH_API_KEYS" ]; then
     echo ""
 fi
 
-exec .venv/bin/uvicorn broker.main:app --host 0.0.0.0 --port 8080
+# Drop privileges and run as linkauth
+exec gosu linkauth .venv/bin/uvicorn broker.main:app --host 0.0.0.0 --port 8080
