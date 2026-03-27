@@ -1,4 +1,8 @@
-"""Integration tests against the live broker at broker.linkauth.io.
+"""Integration tests against the live broker.
+
+Configuration via environment variables (loaded from .env.test):
+  LINKAUTH_TEST_BASE_URL  — broker URL (default: https://broker.linkauth.io)
+  LINKAUTH_TEST_API_KEY   — valid X-API-Key for the broker
 
 Run with: python -m pytest tests/test_integration_live.py -v
 """
@@ -7,16 +11,30 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import time
 
 import httpx
+import pytest
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from dotenv import load_dotenv
 
-BASE_URL = "https://broker.linkauth.io"
-API_KEY = "lZs7nJQr9wpDC_RGvmeCXkjmv-hBiCDeefV6KcB3E2Y"
+load_dotenv(".env.test")
+
+BASE_URL = os.environ.get("LINKAUTH_TEST_BASE_URL", "https://broker.linkauth.io")
+API_KEY = os.environ.get("LINKAUTH_TEST_API_KEY", "")
+
+if not API_KEY:
+    pytest.skip(
+        "LINKAUTH_TEST_API_KEY not set — skipping live integration tests. "
+        "Copy .env.test and fill in your API key.",
+        allow_module_level=True,
+    )
+
 HEADERS = {"X-API-Key": API_KEY, "Content-Type": "application/json"}
+AUTH_HEADERS = {"X-API-Key": API_KEY}
 
 
 def _generate_keypair() -> tuple[rsa.RSAPrivateKey, str]:
@@ -125,7 +143,6 @@ def test_full_session_lifecycle():
     assert "poll_token" in session
     assert "url" in session
     assert "expires_at" in session
-    assert session["url"].startswith("https://broker.linkauth.io/connect/")
 
     session_id = session["session_id"]
     code = session["code"]
@@ -134,13 +151,13 @@ def test_full_session_lifecycle():
     # Step 2: Poll — should be PENDING
     r = httpx.get(
         f"{BASE_URL}/v1/sessions/{session_id}",
-        headers={"Authorization": f"Bearer {poll_token}"},
+        headers={**AUTH_HEADERS, "Authorization": f"Bearer {poll_token}"},
         timeout=10,
     )
     assert r.status_code == 200
     assert r.json()["status"] == "pending"
 
-    # Step 3: Get session info (frontend endpoint)
+    # Step 3: Get session info (frontend endpoint — no API key needed)
     r = httpx.get(f"{BASE_URL}/v1/connect/{code}", timeout=10)
     assert r.status_code == 200
     info = r.json()
@@ -162,7 +179,7 @@ def test_full_session_lifecycle():
     # Step 6: Encrypt credentials (simulate browser) and complete
     credentials = {"api_key": "sk-test-integration-12345"}
     aes_key = AESGCM.generate_key(bit_length=256)
-    iv = b'\x00' * 12  # simple IV for testing
+    iv = b'\x00' * 12
     aesgcm = AESGCM(aes_key)
     ct = aesgcm.encrypt(iv, json.dumps(credentials).encode(), None)
 
@@ -197,7 +214,7 @@ def test_full_session_lifecycle():
     time.sleep(1)
     r = httpx.get(
         f"{BASE_URL}/v1/sessions/{session_id}",
-        headers={"Authorization": f"Bearer {poll_token}"},
+        headers={**AUTH_HEADERS, "Authorization": f"Bearer {poll_token}"},
         timeout=10,
     )
     assert r.status_code == 200
@@ -210,14 +227,13 @@ def test_full_session_lifecycle():
     decrypted = _decrypt_payload(private_key, result["ciphertext"])
     assert decrypted == credentials
 
-    # Step 9: Poll again — should be consumed (one-time retrieval)
-    time.sleep(6)  # respect poll interval
+    # Step 9: Poll again — session consumed (one-time retrieval)
+    time.sleep(6)
     r = httpx.get(
         f"{BASE_URL}/v1/sessions/{session_id}",
-        headers={"Authorization": f"Bearer {poll_token}"},
+        headers={**AUTH_HEADERS, "Authorization": f"Bearer {poll_token}"},
         timeout=10,
     )
-    # After consumption, session is gone or shows consumed
     assert r.status_code in (200, 404)
     if r.status_code == 200:
         assert r.json()["status"] in ("consumed", "pending")
@@ -280,8 +296,9 @@ def test_proxy_ssrf_blocked():
         },
         timeout=15,
     )
-    # Should be blocked — either 403 (SSRF blocked) or 502 (connection refused)
-    assert r.status_code in (403, 502), f"Expected SSRF block, got {r.status_code}: {r.text}"
+    assert r.status_code in (403, 502), (
+        f"Expected SSRF block, got {r.status_code}: {r.text}"
+    )
 
 
 def test_proxy_invalid_method():
@@ -340,7 +357,7 @@ def test_webhook_relay_full_flow():
     time.sleep(1)
     r = httpx.get(
         f"{BASE_URL}/v1/sessions/{session_id}",
-        headers={"Authorization": f"Bearer {poll_token}"},
+        headers={**AUTH_HEADERS, "Authorization": f"Bearer {poll_token}"},
         timeout=10,
     )
     assert r.status_code == 200
@@ -359,7 +376,7 @@ def test_webhook_relay_full_flow():
 
 def test_webhook_wrong_token():
     """Webhook with wrong token should be rejected."""
-    private_key, pub_b64 = _generate_keypair()
+    _, pub_b64 = _generate_keypair()
 
     r = httpx.post(
         f"{BASE_URL}/v1/sessions",
@@ -372,10 +389,8 @@ def test_webhook_wrong_token():
         timeout=10,
     )
     assert r.status_code == 201
-    session = r.json()
-    session_id = session["session_id"]
+    session_id = r.json()["session_id"]
 
-    # Use wrong token
     r = httpx.post(
         f"{BASE_URL}/v1/sessions/{session_id}/webhook?token=wt_wrong_token",
         json={"test": True},
@@ -386,7 +401,7 @@ def test_webhook_wrong_token():
 
 def test_webhook_no_token():
     """Webhook without token should be rejected."""
-    private_key, pub_b64 = _generate_keypair()
+    _, pub_b64 = _generate_keypair()
 
     r = httpx.post(
         f"{BASE_URL}/v1/sessions",
@@ -428,7 +443,7 @@ def test_callback_url_requires_https():
         timeout=10,
     )
     assert r.status_code == 400
-    assert "HTTPS" in r.json()["detail"] or "https" in r.json()["detail"].lower()
+    assert "https" in r.json()["detail"].lower()
 
 
 def test_callback_url_https_accepted():
@@ -456,7 +471,7 @@ def test_callback_url_https_accepted():
 # ---------------------------------------------------------------------------
 
 def test_poll_wrong_token():
-    """Polling with wrong token should be rejected."""
+    """Polling with wrong token should be rejected (403)."""
     _, pub_b64 = _generate_keypair()
 
     r = httpx.post(
@@ -470,14 +485,14 @@ def test_poll_wrong_token():
 
     r = httpx.get(
         f"{BASE_URL}/v1/sessions/{session_id}",
-        headers={"Authorization": "Bearer pt_wrong_token"},
+        headers={**AUTH_HEADERS, "Authorization": "Bearer pt_wrong_token"},
         timeout=10,
     )
     assert r.status_code == 403
 
 
 def test_poll_missing_auth():
-    """Polling without Authorization header should be rejected."""
+    """Polling without Authorization header should be rejected (401)."""
     _, pub_b64 = _generate_keypair()
 
     r = httpx.post(
@@ -489,5 +504,9 @@ def test_poll_missing_auth():
     assert r.status_code == 201
     session_id = r.json()["session_id"]
 
-    r = httpx.get(f"{BASE_URL}/v1/sessions/{session_id}", timeout=10)
+    r = httpx.get(
+        f"{BASE_URL}/v1/sessions/{session_id}",
+        headers=AUTH_HEADERS,
+        timeout=10,
+    )
     assert r.status_code == 401
