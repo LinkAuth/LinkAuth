@@ -303,6 +303,18 @@ wheels = [
 ]
 
 [[package]]
+name = "drawbridge"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpx" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/32/35/c70e9c1659cfdc93582c1416fb1d3be7028cd68f5abe362265a0ee5def11/drawbridge-0.1.2.tar.gz", hash = "sha256:a61831894232b7ea7b1e3e77085f201818f5c42a62d5cefaef4eca6c79ccf45a", size = 15569, upload-time = "2026-02-27T23:58:15.541Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/8d/5d/403c979fdf4a8f5a37196a8bb187a5f6e8982a5f28dbcd4a08f02c116d98/drawbridge-0.1.2-py3-none-any.whl", hash = "sha256:f641642ac26361789497856a0b4791de2bd3fffea681df34a2dc5d68a7a66fca", size = 21192, upload-time = "2026-02-27T23:58:14.516Z" },
+]
+
+[[package]]
 name = "fastapi"
 version = "0.135.1"
 source = { registry = "https://pypi.org/simple" }
@@ -411,10 +423,11 @@ wheels = [
 
 [[package]]
 name = "linkauth"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },
+    { name = "drawbridge" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "pydantic" },
@@ -445,6 +458,7 @@ requires-dist = [
     { name = "authlib", marker = "extra == 'oauth'", specifier = ">=1.3.0" },
     { name = "cryptography", marker = "extra == 'examples'", specifier = ">=43.0.0" },
     { name = "cryptography", marker = "extra == 'oauth'", specifier = ">=43.0.0" },
+    { name = "drawbridge", specifier = ">=0.1.2" },
     { name = "fastapi", specifier = ">=0.115.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "loginpass", marker = "extra == 'oauth'", specifier = ">=0.5" },

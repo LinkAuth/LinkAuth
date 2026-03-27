@@ -124,7 +124,15 @@ class SqliteSessionDAO(SessionDAO):
         self._db = await aiosqlite.connect(self._db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.execute(_CREATE_SESSIONS)
-        for col in ("oauth_code_verifier TEXT", "callback_secret TEXT", "webhook_token TEXT"):
+        _MIGRATIONS = (
+            "custom_authorize_url TEXT",
+            "custom_callback_params TEXT",
+            "custom_state TEXT",
+            "oauth_code_verifier TEXT",
+            "callback_secret TEXT",
+            "webhook_token TEXT",
+        )
+        for col in _MIGRATIONS:
             try:
                 await self._db.execute(f"ALTER TABLE sessions ADD COLUMN {col}")
             except Exception:
