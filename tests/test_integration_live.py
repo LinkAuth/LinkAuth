@@ -211,7 +211,8 @@ def test_full_session_lifecycle():
     assert r.status_code == 204, f"Complete failed: {r.text}"
 
     # Step 7: Poll — should be READY with ciphertext
-    time.sleep(1)
+    # Respect RFC 8628 poll interval (5s) to avoid 429 slow_down
+    time.sleep(6)
     r = httpx.get(
         f"{BASE_URL}/v1/sessions/{session_id}",
         headers={**AUTH_HEADERS, "Authorization": f"Bearer {poll_token}"},
