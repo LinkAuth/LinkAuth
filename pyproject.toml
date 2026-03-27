@@ -1,6 +1,6 @@
 [project]
 name = "linkauth"
-version = "0.1.0"
+version = "0.2.0"
 description = "A zero-knowledge credential broker for autonomous AI agents"
 requires-python = ">=3.11"
 dependencies = [
@@ -9,6 +9,7 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "pydantic>=2.0.0",
     "httpx>=0.27.0",
+    "drawbridge>=0.1.2",
     "pyyaml>=6.0",
     "python-dotenv>=1.0.0",
 ]

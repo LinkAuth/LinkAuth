@@ -1,13 +1,20 @@
 from __future__ import annotations
 
-import asyncio
+import fnmatch
 import logging
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 import hmac
+import httpx
+
+try:
+    import drawbridge
+except ImportError:
+    drawbridge = None  # type: ignore[assignment]
 
 logger = logging.getLogger("linkauth.api")
 
@@ -20,7 +27,6 @@ from broker.dao.base import SessionDAO
 from broker.models import Session, SessionStatus, TemplateType
 from broker.crypto import validate_public_key
 from broker.oauth import (
-    OAuthSession,
     build_authorization_url,
     encrypt_for_agent,
     exchange_token,
@@ -91,6 +97,10 @@ class CreateSessionRequest(BaseModel):
     oauth_extra_params: dict[str, str] | None = None
     callback_url: str | None = None
     ttl: int | None = None
+    custom_authorize_url: str | None = None
+    custom_callback_params: list[str] | None = None
+    custom_state: str | None = None
+    enable_webhook: bool = False
 
 
 class CreateSessionResponse(BaseModel):
@@ -100,6 +110,8 @@ class CreateSessionResponse(BaseModel):
     poll_token: str
     expires_at: str
     interval: int  # RFC 8628: recommended polling interval in seconds
+    callback_secret: str | None = None
+    webhook_url: str | None = None
 
 
 class SessionStatusResponse(BaseModel):
@@ -118,6 +130,20 @@ class CompleteSessionRequest(BaseModel):
 
 class ConfirmSessionResponse(BaseModel):
     connect_token: str  # one-time token to proceed with Step 2
+
+
+class ProxyRequest(BaseModel):
+    method: str = Field(..., pattern="^(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS)$")
+    url: str
+    headers: dict[str, str] | None = None
+    body: str | None = None
+    timeout: int = Field(default=30, ge=1, le=120)
+
+
+class ProxyResponse(BaseModel):
+    status_code: int
+    headers: dict[str, str]
+    body: str
 
 
 class SecurityInfo(BaseModel):
@@ -255,6 +281,18 @@ async def create_session(
             detail=str(e),
         )
 
+    # Validate callback_url scheme — HTTPS required except on localhost
+    if body.callback_url:
+        parsed_cb = urlparse(body.callback_url)
+        cb_host = parsed_cb.hostname or ""
+        is_local = cb_host in ("localhost", "127.0.0.1", "::1")
+        if parsed_cb.scheme != "https" and not is_local:
+            return problem_response(
+                400, "Invalid Callback URL",
+                "callback_url must use HTTPS in production. "
+                "HTTP is only allowed for localhost.",
+            )
+
     # Validate OAuth provider if this is an OAuth template
     if tpl.template_type == TemplateType.OAUTH and tpl.oauth_provider:
         try:
@@ -282,7 +320,16 @@ async def create_session(
         callback_url=body.callback_url,
         created_at=now,
         expires_at=now + timedelta(seconds=ttl),
+        custom_authorize_url=body.custom_authorize_url,
+        custom_callback_params=body.custom_callback_params,
+        custom_state=body.custom_state,
     )
+
+    if body.callback_url:
+        session.callback_secret = Session.generate_callback_secret()
+    if body.enable_webhook:
+        session.webhook_token = Session.generate_webhook_token()
+
     await dao.create(session)
 
     url = f"{config.server.base_url}/connect/{code}"
@@ -293,6 +340,11 @@ async def create_session(
         poll_token=session.poll_token,
         expires_at=session.expires_at.isoformat(),
         interval=config.sessions.poll_interval,
+        callback_secret=session.callback_secret,
+        webhook_url=(
+            f"{config.server.base_url}/v1/sessions/{session.session_id}/webhook?token={session.webhook_token}"
+            if session.webhook_token else None
+        ),
     )
 
 
@@ -362,6 +414,104 @@ async def get_session(
         status=session.status.value,
         expires_at=session.expires_at.isoformat(),
         interval=poll_interval,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Generic HTTP proxy
+# ---------------------------------------------------------------------------
+
+def _is_domain_allowed(url: str, allowed_domains: list[str]) -> bool:
+    """Check whether *url*'s hostname matches the allowlist.
+
+    An empty allowlist means "allow everything".  Patterns may use
+    leading ``*.`` wildcards (e.g. ``*.auth0.com``).
+    """
+    if not allowed_domains:
+        return True
+    hostname = urlparse(url).hostname or ""
+    return any(fnmatch.fnmatch(hostname, pat) for pat in allowed_domains)
+
+
+@router.post(
+    "/proxy",
+    response_model=ProxyResponse,
+    dependencies=[Depends(require_api_key)],
+)
+async def http_proxy(
+    body: ProxyRequest,
+    config=Depends(get_config),
+):
+    """Forward an HTTP request on behalf of a sandboxed agent.
+
+    The broker acts as a transparent forward proxy.  The agent
+    authenticates with its API key; the broker makes the outbound call
+    and returns the raw response.
+    """
+    proxy_cfg = config.proxy
+    if not proxy_cfg.enabled:
+        return problem_response(
+            403, "Proxy Disabled",
+            "The HTTP proxy endpoint is disabled on this broker.",
+        )
+
+    if not _is_domain_allowed(body.url, proxy_cfg.allowed_domains):
+        return problem_response(
+            403, "Domain Not Allowed",
+            "The target domain is not on the proxy allowlist.",
+        )
+
+    timeout = min(body.timeout, proxy_cfg.max_timeout)
+
+    req_headers = dict(body.headers) if body.headers else {}
+    content = body.body.encode("utf-8") if body.body else None
+
+    try:
+        if drawbridge is not None:
+            async with drawbridge.Client(
+                allow_private=proxy_cfg.allow_private_ips,
+            ) as client:
+                resp = await client.request(
+                    method=body.method,
+                    url=body.url,
+                    headers=req_headers,
+                    content=content,
+                    timeout=timeout,
+                    max_redirects=0,
+                )
+        else:
+            async with httpx.AsyncClient() as client:
+                resp = await client.request(
+                    method=body.method,
+                    url=body.url,
+                    headers=req_headers,
+                    content=content,
+                    timeout=timeout,
+                )
+    except Exception as exc:
+        if drawbridge is not None and isinstance(exc, drawbridge.DrawbridgeError):
+            return problem_response(
+                403, "SSRF Blocked",
+                "Request blocked: target resolves to a private/reserved IP.",
+            )
+        if isinstance(exc, httpx.TimeoutException):
+            return problem_response(
+                504, "Gateway Timeout",
+                f"The upstream server did not respond within {timeout}s.",
+            )
+        if isinstance(exc, httpx.RequestError):
+            return problem_response(
+                502, "Bad Gateway",
+                f"Failed to reach upstream: {exc}",
+            )
+        raise
+
+    resp_headers = {k: v for k, v in resp.headers.items()}
+
+    return ProxyResponse(
+        status_code=resp.status_code,
+        headers=resp_headers,
+        body=resp.text,
     )
 
 
@@ -457,18 +607,14 @@ async def complete_session(
 
     if session.callback_url:
         background.add_task(
-            deliver_callback, session.callback_url, session.session_id, body.ciphertext
+            deliver_callback, session.callback_url, session.session_id, body.ciphertext,
+            algorithm=body.algorithm, callback_secret=session.callback_secret,
         )
 
 
 # ---------------------------------------------------------------------------
 # OAuth endpoints
 # ---------------------------------------------------------------------------
-
-# In-memory PKCE state (maps state param -> OAuthSession)
-# In production, this should be stored in the DAO layer.
-_oauth_sessions: dict[str, OAuthSession] = {}
-
 
 @router.get("/oauth/authorize/{code}")
 async def oauth_authorize(
@@ -495,6 +641,12 @@ async def oauth_authorize(
             403, "Invalid Connect Token",
             "Invalid or missing connect_token. Re-confirm the session code.",
         )
+    # -- Passthrough redirect: custom authorize URL from the agent --
+    if session.custom_authorize_url:
+        await dao.store_oauth_state(session.session_id, "")
+        return RedirectResponse(url=session.custom_authorize_url, status_code=302)
+
+    # -- Standard OAuth flow --
     if session.template.template_type != TemplateType.OAUTH or not session.template.oauth_provider:
         return problem_response(400, "Not an OAuth Session", "This session does not use OAuth.")
 
@@ -508,10 +660,7 @@ async def oauth_authorize(
 
     # Use session_id as state to map callback back to this session
     state = session.session_id
-    _oauth_sessions[state] = OAuthSession(
-        code_verifier=code_verifier,
-        state=state,
-    )
+    await dao.store_oauth_state(session.session_id, code_verifier)
 
     redirect_uri = f"{config.server.base_url}/v1/oauth/callback"
     auth_url = build_authorization_url(
@@ -528,6 +677,7 @@ async def oauth_authorize(
 
 @router.get("/oauth/callback")
 async def oauth_callback(
+    request: Request,
     state: str | None = None,
     code: str | None = None,
     error: str | None = None,
@@ -538,31 +688,84 @@ async def oauth_callback(
 ):
     """OAuth provider redirects back here after user authorization.
 
-    Exchanges the authorization code for tokens, encrypts them with
-    the agent's public key, and stores the ciphertext.
+    Standard mode: exchanges the authorization code for tokens.
+    Passthrough mode: extracts custom callback parameters, encrypts
+    and stores them for the agent to retrieve.
     """
     # Handle provider errors — reset session to PENDING so code must be re-confirmed
     if error:
         detail = error_description or error
         if state:
-            _oauth_sessions.pop(state, None)
+            # Try standard lookup first, then custom_state lookup
             session = await dao.get(state)
+            if not session:
+                session = await dao.get_by_custom_state(state)
             if session:
+                await dao.clear_oauth_state(session.session_id)
                 await dao.update_status(session.session_id, SessionStatus.PENDING)
         return problem_response(400, "OAuth Authorization Failed", f"Provider returned error: {detail}")
 
-    if not state or not code:
-        return problem_response(400, "Invalid Callback", "Missing state or code parameter.")
+    # -- Path A: Standard lookup by state (= session_id) --
+    session = None
+    is_passthrough = False
+    if state:
+        session = await dao.get(state)
+        if session and session.oauth_code_verifier is not None:
+            is_passthrough = bool(session.custom_authorize_url)
+        else:
+            session = None
 
-    # Look up PKCE session
-    oauth_session = _oauth_sessions.pop(state, None)
-    if not oauth_session:
+    # -- Path B: Passthrough lookup by custom_state --
+    if not session and state:
+        session = await dao.get_by_custom_state(state)
+        if session:
+            is_passthrough = True
+
+    if not session:
+        if not state and not code:
+            return problem_response(400, "Invalid Callback", "Missing state or code parameter.")
         return problem_response(400, "Invalid State", "OAuth state parameter not recognized. Session may have expired.")
 
-    # Look up LinkAuth session via state (= session_id)
-    session = await dao.get(state)
-    if not session:
-        return problem_response(404, "Session Not Found", "LinkAuth session not found or expired.")
+    code_verifier = session.oauth_code_verifier or ""
+    # Pop semantics: clear OAuth state to prevent replay
+    await dao.clear_oauth_state(session.session_id)
+
+    # -- Passthrough: extract custom callback params, encrypt, store --
+    if is_passthrough:
+        all_params = dict(request.query_params)
+        capture = session.custom_callback_params or []
+        captured = {k: all_params.get(k, "") for k in capture}
+        if not any(captured.values()):
+            captured["code"] = all_params.get("code", "")
+
+        try:
+            ciphertext_b64 = encrypt_for_agent(captured, session.public_key)
+        except Exception as exc:
+            return problem_response(
+                500, "Encryption Failed",
+                f"Failed to encrypt callback params: {exc}",
+            )
+
+        ok = await dao.store_ciphertext(
+            session.session_id, ciphertext_b64, "RSA-OAEP-256+AES-256-GCM",
+        )
+        if not ok:
+            return problem_response(500, "Storage Error", "Failed to store encrypted data.")
+
+        if session.callback_url and background:
+            background.add_task(
+                deliver_callback, session.callback_url, session.session_id, ciphertext_b64,
+                algorithm="RSA-OAEP-256+AES-256-GCM", callback_secret=session.callback_secret,
+            )
+
+        return RedirectResponse(
+            url=f"{config.server.base_url}/connect/{session.code}?status=success",
+            status_code=302,
+        )
+
+    # -- Standard OAuth flow --
+    if not code:
+        return problem_response(400, "Invalid Callback", "Missing code parameter.")
 
     if not session.template.oauth_provider:
         return problem_response(400, "Not an OAuth Session", "This session does not use OAuth.")
@@ -579,16 +782,12 @@ async def oauth_callback(
             provider=provider,
             redirect_uri=redirect_uri,
             authorization_code=code,
-            code_verifier=oauth_session.code_verifier,
+            code_verifier=code_verifier,
         )
     except ValueError as e:
-        # Reset to PENDING — user must re-confirm code for next attempt
         await dao.update_status(session.session_id, SessionStatus.PENDING)
         return problem_response(502, "OAuth Token Exchange Failed", str(e))
 
-    # Encrypt token with agent's public key (server-side encryption)
-    # The broker briefly sees the tokens in plaintext — this is the documented
-    # OAuth zero-knowledge caveat.
     try:
         ciphertext_b64 = encrypt_for_agent(token, session.public_key)
     except Exception as exc:
@@ -598,21 +797,79 @@ async def oauth_callback(
             f"Failed to encrypt OAuth tokens with agent's public key: {exc}",
         )
 
-    # Store encrypted tokens
     ok = await dao.store_ciphertext(
         session.session_id, ciphertext_b64, "RSA-OAEP-256+AES-256-GCM"
     )
     if not ok:
         return problem_response(500, "Storage Error", "Failed to store encrypted tokens.")
 
-    # Trigger callback if configured
     if session.callback_url and background:
         background.add_task(
-            deliver_callback, session.callback_url, session.session_id, ciphertext_b64
+            deliver_callback, session.callback_url, session.session_id, ciphertext_b64,
+            algorithm="RSA-OAEP-256+AES-256-GCM", callback_secret=session.callback_secret,
         )
 
-    # Redirect user to a success page
     return RedirectResponse(
         url=f"{config.server.base_url}/connect/{session.code}?status=success",
         status_code=302,
     )
+
+
+# ---------------------------------------------------------------------------
+# Webhook relay
+# ---------------------------------------------------------------------------
+
+@router.post("/sessions/{session_id}/webhook", status_code=200)
+async def webhook_relay(
+    session_id: str,
+    request: Request,
+    token: str | None = None,
+    dao: SessionDAO = Depends(get_session_dao),
+    config=Depends(get_config),
+):
+    """Receive an inbound webhook payload and store it encrypted for the agent.
+
+    This is an ephemeral relay — the session's TTL (max 15 min) applies.
+    The webhook_token is auto-generated and included in the webhook URL
+    returned when creating a session with enable_webhook=True.
+    """
+    session = await dao.get(session_id)
+    if not session:
+        return _session_not_found()
+
+    if not session.webhook_token:
+        return problem_response(403, "Webhook Not Enabled", "This session does not have webhooks enabled.")
+
+    if not token or not hmac.compare_digest(token, session.webhook_token):
+        return problem_response(403, "Invalid Webhook Token", "The provided webhook token is not valid.")
+
+    body_bytes = await request.body()
+    max_payload = config.sessions.max_webhook_payload
+    if len(body_bytes) > max_payload:
+        return problem_response(
+            413, "Payload Too Large",
+            f"Webhook payload exceeds the maximum allowed size of {max_payload} bytes.",
+        )
+
+    content_type = request.headers.get("content-type", "application/octet-stream")
+    payload = {
+        "headers": dict(request.headers),
+        "body": body_bytes.decode("utf-8", errors="replace"),
+        "content_type": content_type,
+    }
+
+    try:
+        ciphertext_b64 = encrypt_for_agent(payload, session.public_key)
+    except Exception as exc:
+        return problem_response(
+            500, "Encryption Failed",
+            f"Failed to encrypt webhook payload: {exc}",
+        )
+
+    ok = await dao.store_ciphertext(
+        session.session_id, ciphertext_b64, "RSA-OAEP-256+AES-256-GCM",
+    )
+    if not ok:
+        return problem_response(500, "Storage Error", "Failed to store encrypted webhook payload.")
+
+    return {"status": "accepted", "session_id": session_id}

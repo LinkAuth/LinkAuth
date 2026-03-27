@@ -32,12 +32,23 @@ class SessionsConfig:
     cleanup_interval: int = 60
     code_length: int = 8
     poll_interval: int = 5  # RFC 8628: recommended polling interval in seconds
+    max_webhook_payload: int = 65536
 
 
 @dataclass
 class SecurityConfig:
     """API key authentication for agent-facing endpoints."""
     api_keys: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ProxyConfig:
+    """Configuration for the generic HTTP proxy endpoint."""
+    enabled: bool = True
+    allowed_domains: list[str] = field(default_factory=list)
+    max_timeout: int = 60
+    default_timeout: int = 30
+    allow_private_ips: bool = False
 
 
 @dataclass
@@ -66,6 +77,7 @@ class AppConfig:
     sessions: SessionsConfig = field(default_factory=SessionsConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
     rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
+    proxy: ProxyConfig = field(default_factory=ProxyConfig)
     oauth_providers: dict[str, OAuthProviderConfig] = field(default_factory=dict)
 
 
@@ -83,6 +95,7 @@ def load_config(path: str = "config.yaml") -> AppConfig:
     sessions_raw = raw.get("sessions", {})
     security_raw = raw.get("security", {})
     rate_limit_raw = raw.get("rate_limit", {})
+    proxy_raw = raw.get("proxy", {})
 
     sqlite_raw = storage_raw.get("sqlite", {})
 
@@ -118,6 +131,14 @@ def load_config(path: str = "config.yaml") -> AppConfig:
             env_base_url = f"https://{env_base_url}"
         server_raw["base_url"] = env_base_url
 
+    proxy_config = ProxyConfig(
+        enabled=proxy_raw.get("enabled", True),
+        allowed_domains=proxy_raw.get("allowed_domains", []),
+        max_timeout=proxy_raw.get("max_timeout", 60),
+        default_timeout=proxy_raw.get("default_timeout", 30),
+        allow_private_ips=proxy_raw.get("allow_private_ips", False),
+    )
+
     return AppConfig(
         server=ServerConfig(**server_raw),
         storage=StorageConfig(
@@ -127,5 +148,6 @@ def load_config(path: str = "config.yaml") -> AppConfig:
         sessions=SessionsConfig(**sessions_raw),
         security=SecurityConfig(api_keys=all_api_keys),
         rate_limit=RateLimitConfig(**rate_limit_raw),
+        proxy=proxy_config,
         oauth_providers=oauth_providers,
     )

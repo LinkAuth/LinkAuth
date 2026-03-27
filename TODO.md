@@ -29,6 +29,9 @@
 - [ ] **CORS & CSP**: Strict Content-Security-Policy for the connect page to prevent injected JS from intercepting credentials. CORS currently allows all origins — tighten for production.
 - [ ] **Input validation**: Validate public_key format (valid base64, valid SPKI/DER), TTL boundaries. Currently accepts any string.
 - [x] **TLS security banner**: Frontend shows yellow (localhost) or red (remote without TLS) banner. Documented E2E encryption guarantees and MITM JS-injection risk in README.
+- [x] **SSRF protection**: DNS-pinned SSRF protection via drawbridge at transport layer. Private IPs blocked by default.
+- [x] **OAuth state persistence**: OAuth PKCE state (`code_verifier`) stored in DB instead of in-memory dict. Survives restarts and scale-out.
+- [x] **Callback HMAC**: Callbacks signed with HMAC-SHA256 (`X-LinkAuth-Signature`), retry with exponential backoff, idempotent delivery ID.
 
 ## MVP (v0.1) — Broker + Frontend only, no SDK
 
@@ -67,13 +70,15 @@
 
 ## v0.2
 
-- [ ] **OAuth flow support** (Google, GitHub, Slack)
-  - [ ] OAuth provider config (broker-side)
-  - [ ] `/oauth/callback` endpoint
-  - [ ] Token encryption after OAuth callback
+- [x] **OAuth flow support** (Google, GitHub, Slack, Auth0 Connected Accounts)
+  - [x] OAuth provider config (broker-side) with OIDC Discovery + loginpass
+  - [x] `/oauth/callback` endpoint with PKCE, standard + passthrough mode
+  - [x] Token encryption after OAuth callback
 - [ ] **Template Registry**: `PUT /v1/templates/{name}` — register reusable custom templates on the broker
 - [ ] **WebSocket/SSE instead of polling**: `GET /v1/sessions/{session_id}/events` for real-time updates
-- [ ] **Callback security**: HMAC signature for callback requests, retry with backoff on failure
+- [x] **Callback security**: HMAC-SHA256 signature for callback requests, retry with exponential backoff, idempotent delivery ID
+- [x] **Webhook Relay (ephemeral)**: `POST /v1/sessions/{id}/webhook` — inbound webhook relay for short-lived flows. Auto-generated token, E2E encrypted, 64 KB payload limit.
+- [ ] **Webhook Inbox (long-lived)**: Persistent webhook subscriptions with own storage model (`webhook_subscriptions` + `webhook_events`). Separate from ephemeral session relay.
 - [ ] **Code entry mode (high security)**: Configurable alternative flow — user must manually type the code instead of just confirming. Fully prevents phishing via manipulated links.
 - [ ] **Docker deployment**: Single-container with Caddy reverse proxy (TLS 1.3, automatic Let's Encrypt)
 - [ ] **Token refresh management** (broker-side, for OAuth)
