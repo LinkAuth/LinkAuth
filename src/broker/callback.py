@@ -54,19 +54,17 @@ async def deliver_callback(
         headers["X-LinkAuth-Signature"] = f"sha256={sig}"
 
     try:
-        client_cm = drawbridge.Client() if drawbridge is not None else httpx.AsyncClient(timeout=10.0)
+        if drawbridge is not None:
+            policy = drawbridge.Policy(max_redirects=0, timeout=10.0)
+            client_cm = drawbridge.Client(policy)
+        else:
+            client_cm = httpx.AsyncClient(timeout=10.0)
         async with client_cm as client:
             for attempt in range(_MAX_RETRIES):
                 try:
-                    if drawbridge is not None:
-                        resp = await client.post(
-                            callback_url, content=body_bytes, headers=headers,
-                            timeout=10.0, max_redirects=0,
-                        )
-                    else:
-                        resp = await client.post(
-                            callback_url, content=body_bytes, headers=headers,
-                        )
+                    resp = await client.post(
+                        callback_url, content=body_bytes, headers=headers,
+                    )
 
                     if resp.is_success:
                         logger.info("callback.delivered",

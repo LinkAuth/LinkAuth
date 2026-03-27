@@ -490,16 +490,17 @@ async def http_proxy(
 
     try:
         if drawbridge is not None:
-            async with drawbridge.Client(
+            policy = drawbridge.Policy(
                 allow_private=proxy_cfg.allow_private_ips,
-            ) as client:
+                max_redirects=0,
+                timeout=timeout,
+            )
+            async with drawbridge.Client(policy) as client:
                 resp = await client.request(
                     method=body.method,
                     url=body.url,
                     headers=req_headers,
                     content=content,
-                    timeout=timeout,
-                    max_redirects=0,
                 )
         else:
             async with httpx.AsyncClient() as client:

@@ -1,8 +1,22 @@
 # LinkAuth
 
-> A zero-knowledge credential broker for autonomous AI agents.
+> The secure way for AI agents to request user credentials, without custom web portals, OAuth callback plumbing, or plaintext secrets.
 
-AI agents need credentials (OAuth tokens, API keys, passwords) to access external services on behalf of users. Current solutions require callback endpoints, vendor lock-in, or manual setup. LinkAuth solves this with a Device-Flow-inspired UX and zero-knowledge architecture.
+
+## Why LinkAuth?
+
+If you're building AI agents for other users, you've probably hit the same wall I did: **How do you securely get the user's credentials to the agent?**
+
+Right now, there is no standard way to do this. Everyone is forced to reinvent the wheel. You end up building restrictive web apps just to box your agents in, writing fragile OAuth tunnel hacks, or worst of all resorting to storing user credentials in plaintext somewhere in your database. 
+It's a security nightmare and a massive waste of development time.
+
+**Why not have one central solution that makes your AI agents genuinely useful to *any* user, without ever compromising on security?**
+
+But the problem goes even deeper. Modern agents are built from composable **Skills** and those Skills need credentials too. A Gmail Skill needs a Google OAuth token. A Salesforce Skill needs API access. How do you securely route those credentials to the right skill at the right time?
+**LinkAuth is that missing piece.** 
+It's a standalone credential broker with a Device-Flow-inspired UX, hybrid encryption, and a true zero-knowledge architecture. Your agents ask for access, your users approve it, and the credentials flow directly to the agent - encrypted end-to-end. 
+You never see the plaintext credentials, and you never have to build another custom OAuth flow again.
+
 
 ## How It Works
 
