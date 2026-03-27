@@ -12,6 +12,7 @@ dependencies = [
     "drawbridge>=0.1.2",
     "pyyaml>=6.0",
     "python-dotenv>=1.0.0",
+    "structlog>=24.0.0",
 ]
 
 [project.optional-dependencies]

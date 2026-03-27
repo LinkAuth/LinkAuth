@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+import secrets
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
 load_dotenv()  # Load .env before anything reads os.environ
 
+import structlog
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
@@ -17,12 +19,15 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from broker.api import router
 from broker.config import AppConfig, load_config
 from broker.dao.sqlite import SqliteSessionDAO, SqliteTemplateDAO
+from broker.logging import setup_logging
 from broker.templates import ALL_BUILTIN_TEMPLATES
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-logger = logging.getLogger("linkauth")
+logger = structlog.get_logger("linkauth")
 
 _cleanup_task: asyncio.Task | None = None
+
+# Paths that should not generate INFO-level request logs
+_QUIET_PATHS = {"/health", "/favicon.ico"}
 
 
 async def _cleanup_loop(dao: SqliteSessionDAO, interval: int) -> None:
@@ -30,9 +35,9 @@ async def _cleanup_loop(dao: SqliteSessionDAO, interval: int) -> None:
         try:
             deleted = await dao.cleanup_expired()
             if deleted:
-                logger.info("Cleaned up %d expired sessions", deleted)
+                logger.info("cleanup.expired", deleted=deleted)
         except Exception:
-            logger.exception("Error during session cleanup")
+            logger.exception("cleanup.error")
         await asyncio.sleep(interval)
 
 
@@ -60,11 +65,15 @@ async def lifespan(app: FastAPI):
     )
 
     if config.security.api_keys:
-        logger.info("API key authentication enabled (%d key(s) configured)", len(config.security.api_keys))
+        logger.info("broker.started",
+                     host=config.server.host, port=config.server.port,
+                     api_keys_configured=len(config.security.api_keys))
     else:
-        logger.warning("API key authentication DISABLED — agent endpoints are open. Set LINKAUTH_API_KEYS for production.")
+        logger.warning("broker.started",
+                       host=config.server.host, port=config.server.port,
+                       api_key_auth="disabled",
+                       hint="Set LINKAUTH_API_KEYS for production")
 
-    logger.info("LinkAuth broker started on %s:%d", config.server.host, config.server.port)
     yield
 
     # Shutdown
@@ -72,7 +81,7 @@ async def lifespan(app: FastAPI):
         _cleanup_task.cancel()
     await session_dao.close()
     await template_dao.close()
-    logger.info("LinkAuth broker stopped")
+    logger.info("broker.stopped")
 
 
 class HSTSMiddleware(BaseHTTPMiddleware):
@@ -84,14 +93,55 @@ class HSTSMiddleware(BaseHTTPMiddleware):
         forwarded_proto = request.headers.get("x-forwarded-proto", "")
         is_tls = forwarded_proto == "https" or config.server.base_url.startswith("https://")
         if is_tls:
-            # RFC 6797: max-age=1 year, includeSubDomains
             response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         return response
+
+
+class WideEventMiddleware(BaseHTTPMiddleware):
+    """Emit one wide event per request with full context.
+
+    Binds request_id, method, path, client_ip into structlog contextvars
+    so any log emitted during the request automatically includes them.
+    At request end, emits a single summary event with status + duration.
+    """
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        request_id = f"req_{secrets.token_hex(8)}"
+        client_ip = request.client.host if request.client else "unknown"
+        path = request.url.path
+
+        structlog.contextvars.clear_contextvars()
+        structlog.contextvars.bind_contextvars(
+            request_id=request_id,
+            method=request.method,
+            path=path,
+            client_ip=client_ip,
+        )
+
+        start = time.perf_counter()
+        try:
+            response = await call_next(request)
+            duration_ms = round((time.perf_counter() - start) * 1000, 1)
+
+            log = logger.debug if path in _QUIET_PATHS else logger.info
+            log("request.completed",
+                status_code=response.status_code,
+                duration_ms=duration_ms)
+
+            return response
+        except Exception:
+            duration_ms = round((time.perf_counter() - start) * 1000, 1)
+            logger.exception("request.failed", duration_ms=duration_ms)
+            raise
+        finally:
+            structlog.contextvars.clear_contextvars()
 
 
 def create_app(config: AppConfig | None = None) -> FastAPI:
     if config is None:
         config = load_config()
+
+    setup_logging(config.logging)
 
     app = FastAPI(
         title="LinkAuth",
@@ -100,6 +150,9 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         lifespan=lifespan,
     )
     app.state.config = config
+
+    # Wide event middleware (outermost — wraps everything)
+    app.add_middleware(WideEventMiddleware)
 
     # HSTS — add Strict-Transport-Security when behind TLS
     app.add_middleware(HSTSMiddleware)
@@ -125,7 +178,6 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
     if frontend_dir.exists():
         app.mount("/static", StaticFiles(directory=str(frontend_dir)), name="static")
 
-        # Serve index.html for /connect/{code} — the frontend SPA handles routing
         @app.get("/connect/{code}")
         async def serve_connect_page(code: str):
             return FileResponse(str(frontend_dir / "index.html"))

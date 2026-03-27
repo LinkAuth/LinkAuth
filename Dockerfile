@@ -13,16 +13,14 @@ COPY src/ ./src/
 COPY config.yaml entrypoint.sh ./
 RUN sed -i 's/\r$//' entrypoint.sh && chmod +x entrypoint.sh && uv sync --frozen --no-dev --extra oauth
 
-# Data directory for SQLite + non-root user
-RUN mkdir -p /app/data && \
-    adduser --disabled-password --no-create-home linkauth && \
-    chown -R linkauth:linkauth /app/data
-
-USER linkauth
+# curl for lightweight healthcheck + gosu for privilege drop + non-root user
+RUN apt-get update && apt-get install -y --no-install-recommends curl gosu && rm -rf /var/lib/apt/lists/* && \
+    mkdir -p /app/data /app/logs && \
+    adduser --disabled-password --no-create-home linkauth
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD [".venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health')"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD ["curl", "-sf", "http://localhost:8080/health", "-o", "/dev/null"]
 
 ENTRYPOINT ["./entrypoint.sh"]

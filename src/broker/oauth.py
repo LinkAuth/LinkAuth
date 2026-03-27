@@ -17,12 +17,12 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import logging
 import os
 import secrets
 from dataclasses import dataclass
 
 import httpx
+import structlog
 from authlib.integrations.httpx_client import AsyncOAuth2Client
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
@@ -30,7 +30,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from broker.config import OAuthProviderConfig
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 # ---------------------------------------------------------------------------
 # loginpass provider registry — maps provider_id to OAUTH_CONFIG
@@ -51,7 +51,7 @@ def _load_loginpass_providers() -> None:
             ):
                 _LOGINPASS_PROVIDERS[cls.NAME] = cls.OAUTH_CONFIG
     except ImportError:
-        logger.debug("loginpass not installed — no predefined providers available")
+        logger.debug("oauth.loginpass_unavailable")
 
 _load_loginpass_providers()
 
@@ -166,10 +166,8 @@ def resolve_provider(
                     token_url = token_url or endpoints.get("token_endpoint")
                     userinfo_url = userinfo_url or endpoints.get("userinfo_endpoint")
                 except ValueError:
-                    logger.warning(
-                        "OIDC Discovery via loginpass failed for %s, "
-                        "trying explicit config", provider_id
-                    )
+                    logger.warning("oauth.discovery.loginpass_failed",
+                                   provider=provider_id)
             # Some loginpass providers have explicit URLs
             auth_url = auth_url or lp.get("authorize_url") or lp.get("access_token_url")
             token_url = token_url or lp.get("access_token_url")
@@ -199,7 +197,7 @@ def resolve_provider(
             f"Alternatively, add these to oauth_providers.{provider_id} in config.yaml."
         )
 
-    return ResolvedProvider(
+    resolved = ResolvedProvider(
         provider_id=provider_id,
         auth_url=auth_url,
         token_url=token_url,
@@ -208,6 +206,9 @@ def resolve_provider(
         userinfo_url=userinfo_url,
         server_metadata_url=server_metadata_url,
     )
+    logger.debug("oauth.provider.resolved",
+                 provider=provider_id, auth_url=auth_url, token_url=token_url)
+    return resolved
 
 
 def generate_pkce() -> tuple[str, str]:
@@ -273,6 +274,8 @@ async def exchange_token(
                 code_verifier=code_verifier,
             )
         except Exception as exc:
+            logger.warning("oauth.token_exchange.failed",
+                           provider=provider.provider_id, error=str(exc))
             raise ValueError(
                 f"OAuth provider '{provider.provider_id}' rejected the token exchange. "
                 f"Verify that OAUTH_{provider.provider_id.upper()}_CLIENT_ID and "
@@ -280,6 +283,7 @@ async def exchange_token(
                 f"Error: {exc}"
             ) from exc
 
+    logger.info("oauth.token_exchange.success", provider=provider.provider_id)
     return dict(token)
 
 

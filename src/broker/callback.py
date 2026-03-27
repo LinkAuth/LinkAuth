@@ -4,17 +4,18 @@ import asyncio
 import hashlib
 import hmac
 import json
-import logging
 from uuid import uuid4
 
+
 import httpx
+import structlog
 
 try:
     import drawbridge
 except ImportError:
     drawbridge = None  # type: ignore[assignment]
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 _MAX_RETRIES = 3
 _BACKOFF_BASE = 4  # 1s, 4s, 16s
@@ -68,42 +69,40 @@ async def deliver_callback(
                         )
 
                     if resp.is_success:
-                        logger.info(
-                            "Callback delivered to %s (delivery_id=%s, attempt=%d)",
-                            callback_url, delivery_id, attempt + 1,
-                        )
+                        logger.info("callback.delivered",
+                                    callback_url=callback_url, delivery_id=delivery_id,
+                                    attempt=attempt + 1)
                         return True
 
                     if resp.status_code < 500:
-                        logger.warning(
-                            "Callback to %s returned %d (non-retryable, delivery_id=%s)",
-                            callback_url, resp.status_code, delivery_id,
-                        )
+                        logger.warning("callback.non_retryable",
+                                       callback_url=callback_url, status_code=resp.status_code,
+                                       delivery_id=delivery_id)
                         return False
 
-                    logger.warning(
-                        "Callback to %s returned %d (attempt %d/%d, delivery_id=%s)",
-                        callback_url, resp.status_code, attempt + 1, _MAX_RETRIES, delivery_id,
-                    )
+                    logger.warning("callback.retry",
+                                   callback_url=callback_url, status_code=resp.status_code,
+                                   attempt=attempt + 1, max_retries=_MAX_RETRIES,
+                                   delivery_id=delivery_id)
 
                 except Exception as exc:
                     if drawbridge is not None and isinstance(exc, drawbridge.DrawbridgeError):
-                        logger.error("Callback to %s blocked by SSRF protection: %s", callback_url, exc)
+                        logger.error("callback.ssrf_blocked",
+                                     callback_url=callback_url, error=str(exc))
                         return False
-                    logger.warning(
-                        "Callback to %s failed (attempt %d/%d, delivery_id=%s): %s",
-                        callback_url, attempt + 1, _MAX_RETRIES, delivery_id, exc,
-                    )
+                    logger.warning("callback.attempt_failed",
+                                   callback_url=callback_url, attempt=attempt + 1,
+                                   max_retries=_MAX_RETRIES, delivery_id=delivery_id,
+                                   error=str(exc))
 
                 if attempt < _MAX_RETRIES - 1:
                     backoff = _BACKOFF_BASE ** attempt
                     await asyncio.sleep(backoff)
     except Exception as exc:
-        logger.error("Callback client creation failed for %s: %s", callback_url, exc)
+        logger.error("callback.client_error", callback_url=callback_url, error=str(exc))
         return False
 
-    logger.error(
-        "Callback to %s failed after %d attempts (delivery_id=%s)",
-        callback_url, _MAX_RETRIES, delivery_id,
-    )
+    logger.error("callback.exhausted",
+                 callback_url=callback_url, max_retries=_MAX_RETRIES,
+                 delivery_id=delivery_id)
     return False

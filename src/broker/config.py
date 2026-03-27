@@ -42,6 +42,14 @@ class SecurityConfig:
 
 
 @dataclass
+class LoggingConfig:
+    level: str = "INFO"
+    json_file: str = "./logs/linkauth.jsonl"
+    max_bytes: int = 10_485_760  # 10 MB
+    backup_count: int = 5
+
+
+@dataclass
 class ProxyConfig:
     """Configuration for the generic HTTP proxy endpoint."""
     enabled: bool = True
@@ -76,6 +84,7 @@ class AppConfig:
     storage: StorageConfig = field(default_factory=StorageConfig)
     sessions: SessionsConfig = field(default_factory=SessionsConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
     rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
     proxy: ProxyConfig = field(default_factory=ProxyConfig)
     oauth_providers: dict[str, OAuthProviderConfig] = field(default_factory=dict)
@@ -94,6 +103,7 @@ def load_config(path: str = "config.yaml") -> AppConfig:
     storage_raw = raw.get("storage", {})
     sessions_raw = raw.get("sessions", {})
     security_raw = raw.get("security", {})
+    logging_raw = raw.get("logging", {})
     rate_limit_raw = raw.get("rate_limit", {})
     proxy_raw = raw.get("proxy", {})
 
@@ -131,6 +141,14 @@ def load_config(path: str = "config.yaml") -> AppConfig:
             env_base_url = f"https://{env_base_url}"
         server_raw["base_url"] = env_base_url
 
+    # Logging: env vars take precedence
+    env_log_level = os.environ.get("LINKAUTH_LOG_LEVEL", "")
+    if env_log_level:
+        logging_raw["level"] = env_log_level.upper()
+    env_log_file = os.environ.get("LINKAUTH_LOG_FILE", "")
+    if env_log_file:
+        logging_raw["json_file"] = env_log_file
+
     proxy_config = ProxyConfig(
         enabled=proxy_raw.get("enabled", True),
         allowed_domains=proxy_raw.get("allowed_domains", []),
@@ -147,6 +165,7 @@ def load_config(path: str = "config.yaml") -> AppConfig:
         ),
         sessions=SessionsConfig(**sessions_raw),
         security=SecurityConfig(api_keys=all_api_keys),
+        logging=LoggingConfig(**logging_raw),
         rate_limit=RateLimitConfig(**rate_limit_raw),
         proxy=proxy_config,
         oauth_providers=oauth_providers,
