@@ -1,7 +1,14 @@
 {
   "permissions": {
     "allow": [
-      "Bash(/c/Python312/python -c \":*)"
+      "Bash(/c/Python312/python -c \":*)",
+      "WebFetch(domain:devpost.com)",
+      "WebFetch(domain:vimeo.com)",
+      "WebFetch(domain:mailarchive.ietf.org)",
+      "WebSearch",
+      "WebFetch(domain:www.ietf.org)",
+      "Bash(/c/Python312/python -c \"from broker.api import router; print\\('OK: api.py imports cleanly'\\)\")",
+      "Bash(/c/Python312/python -c \"import sys; sys.path.insert\\(0, 'src'\\); from broker.api import router; print\\('OK: api.py imports cleanly'\\)\")"
     ]
   }
 }

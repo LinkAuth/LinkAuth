@@ -44,6 +44,11 @@ def _session_not_found() -> JSONResponse:
     return problem_response(404, "Session Not Found", "Session not found or expired.")
 
 
+def _oauth_failed() -> JSONResponse:
+    """Standard 400 for OAuth errors. Intentionally vague to prevent information leakage."""
+    return problem_response(400, "OAuth Authorization Failed", "Authorization was not completed.")
+
+
 def problem_response(
     status: int,
     title: str,
@@ -310,6 +315,34 @@ async def create_session(
 # Track last poll time per session for RFC 8628 slow_down
 _last_poll: dict[str, float] = {}
 
+# Rate limiting for connect/confirm endpoints (keyed by IP + code)
+_connect_attempts: dict[str, list[float]] = {}
+
+def _check_connect_rate_limit(request: Request, code: str) -> JSONResponse | None:
+    """Enforce rate limiting on connect and confirm endpoints.
+
+    Limits to 10 requests per minute per source IP per code.
+    Returns a 429 problem response if exceeded, None otherwise.
+    """
+    client_ip = request.headers.get("x-forwarded-for", request.client.host if request.client else "unknown")
+    key = f"{client_ip}:{code}"
+    now = time.monotonic()
+    window = 60.0  # 1 minute
+
+    attempts = _connect_attempts.get(key, [])
+    # Prune old entries outside the window
+    attempts = [t for t in attempts if now - t < window]
+    attempts.append(now)
+    _connect_attempts[key] = attempts
+
+    if len(attempts) > 10:
+        logger.warning("connect.rate_limited", client_ip=client_ip, code=code)
+        return problem_response(
+            429, "Too Many Requests",
+            "Rate limit exceeded. Try again later.",
+        )
+    return None
+
 
 @router.get("/sessions/{session_id}", dependencies=[Depends(require_api_key)])
 async def get_session(
@@ -327,10 +360,16 @@ async def get_session(
 
     auth = request.headers.get("Authorization", "")
     if not auth.startswith("Bearer "):
-        return problem_response(
-            status=401,
-            title="Unauthorized",
-            detail="Missing or invalid Authorization header. Use: Bearer <poll_token>",
+        return JSONResponse(
+            status_code=401,
+            content={
+                "type": "about:blank",
+                "title": "Unauthorized",
+                "status": 401,
+                "detail": "Missing or invalid Authorization header. Use: Bearer <poll_token>",
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+            media_type="application/problem+json",
         )
     poll_token = auth.removeprefix("Bearer ").strip()
 
@@ -399,10 +438,13 @@ async def get_session_info(
     """Frontend fetches session info to render the connect page.
 
     Only returns full session data (fields, public_key) for PENDING sessions.
-    Once CONFIRMED, the session is locked to the browser that confirmed it
-    (via connect_token). Other browsers only see that confirmation happened.
+    Once CONFIRMED, the session is locked to the connect_token bearer.
     """
     structlog.contextvars.bind_contextvars(code=code)
+
+    rate_limit = _check_connect_rate_limit(request, code)
+    if rate_limit:
+        return rate_limit
 
     session = await dao.get_by_code(code)
     if not session:
@@ -440,6 +482,7 @@ async def get_session_info(
 @router.post("/connect/{code}/confirm", response_model=ConfirmSessionResponse)
 async def confirm_code(
     code: str,
+    request: Request,
     dao: SessionDAO = Depends(get_session_dao),
 ):
     """User confirms they see the correct code. Issues a one-time connect_token.
@@ -448,6 +491,10 @@ async def confirm_code(
     operations (OAuth redirect, form submit) require the connect_token.
     """
     structlog.contextvars.bind_contextvars(code=code)
+
+    rate_limit = _check_connect_rate_limit(request, code)
+    if rate_limit:
+        return rate_limit
 
     session = await dao.get_by_code(code)
     if not session:
@@ -554,6 +601,10 @@ async def oauth_authorize(
     except ValueError as e:
         return problem_response(503, "OAuth Provider Error", str(e))
 
+    # Consume connect_token: invalidate it so the OAuth flow cannot be restarted.
+    # The session remains CONFIRMED but with a cleared connect_token.
+    await dao.update_status(session.session_id, SessionStatus.CONFIRMED, connect_token="")
+
     code_verifier, code_challenge = generate_pkce()
 
     state = session.session_id
@@ -572,7 +623,7 @@ async def oauth_authorize(
         extra_params=session.template.oauth_extra_params,
     )
 
-    logger.info("oauth.authorize")
+    logger.info("oauth.authorize", connect_token_consumed=True)
 
     return RedirectResponse(url=auth_url, status_code=302)
 
@@ -595,19 +646,20 @@ async def oauth_callback(
     if state:
         structlog.contextvars.bind_contextvars(session_id=state)
 
-    # Handle provider errors — reset session to PENDING so code must be re-confirmed
+    # Handle provider errors — session stays CONFIRMED until TTL expiry (one-shot design).
+    # The connect_token was already consumed at redirect initiation, so no retry is possible.
+    # The agent must create a new session if the user needs to try again.
     if error:
         detail = error_description or error
         if state:
             _oauth_sessions.pop(state, None)
             session = await dao.get(state)
             if session:
-                await dao.update_status(session.session_id, SessionStatus.PENDING)
                 structlog.contextvars.bind_contextvars(
                     oauth_provider=session.template.oauth_provider,
                 )
         logger.warning("oauth.callback.error", oauth_error=error, oauth_error_description=error_description)
-        return problem_response(400, "OAuth Authorization Failed", f"Provider returned error: {detail}")
+        return _oauth_failed()
 
     if not state or not code:
         return problem_response(400, "Invalid Callback", "Missing state or code parameter.")
@@ -642,8 +694,9 @@ async def oauth_callback(
             code_verifier=oauth_session.code_verifier,
         )
     except ValueError as e:
-        await dao.update_status(session.session_id, SessionStatus.PENDING)
-        return problem_response(502, "OAuth Token Exchange Failed", str(e))
+        # Session stays CONFIRMED (one-shot design) — no retry possible.
+        logger.error("oauth.token_exchange.failed", error=str(e))
+        return _oauth_failed()
 
     try:
         ciphertext_b64 = encrypt_for_agent(token, session.public_key)
