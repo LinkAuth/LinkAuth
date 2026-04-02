@@ -26,8 +26,8 @@ Agent                         Broker                          User (Browser)
 1. Generate RSA keypair
    (private key stays local)
 
-2. POST /sessions
-   { public_key, type, meta }
+2. POST /v1/sessions
+   { public_key, fields }
          --------------->     3. Create session
                                  code = "ABCD-1234"
                                  session_id = SHA256(code)
@@ -35,24 +35,29 @@ Agent                         Broker                          User (Browser)
 
 4. Show URL + code to user
    (via LLM, console, chat)
-                                                              5. Open URL, verify code
+                                                              5. GET /v1/connect/ABCD-1234
+                                                                 Open URL, verify code
 
-                                                              6. Enter credentials
+                                                              6. POST /v1/connect/ABCD-1234/confirm
+                                                                 <-- { connect_token }
+
+                                                              7. Enter credentials
                                                                  (API key, password,
                                                                   or complete OAuth)
 
-                                                              7. Browser encrypts with
+                                                              8. Browser encrypts with
                                                                  agent's public_key
                                                                  (Hybrid: RSA-OAEP + AES-256-GCM)
 
-                              8. Store ciphertext           <-- POST /sessions/:id/complete
-                                 status = "ready"
+                              9. Store ciphertext           <-- POST /v1/connect/ABCD-1234/complete
+                                 status = "ready"               { ciphertext, connect_token }
 
-9. Poll: GET /sessions/:id
-   Authorization: Bearer <poll_token>
-         --------------->     10. Return { ciphertext }
+10. Poll: GET /v1/sessions/{session_id}
+    Authorization: Bearer <poll_token>
+         --------------->     11. Return { ciphertext }
+                                  (one-time retrieval)
 
-11. Decrypt locally
+12. Decrypt locally
     -> plaintext credentials
 ```
 
@@ -392,7 +397,7 @@ This allows arbitrarily large payloads (OAuth tokens, certificates, etc.) while 
 | Sessions expire | TTL of 5-15 minutes, auto-cleanup |
 | One-time use | Credentials retrieved once, then deleted |
 | Polling is authenticated | `poll_token` required to retrieve session results |
-| Rate-limited | Session creation is rate-limited per IP / API key |
+| Rate-limited | Session creation, connect, and confirm endpoints are rate-limited per IP |
 | Proxy SSRF protection | DNS pinned at transport layer via drawbridge, private IPs blocked by default |
 | Callback authentication | HMAC-SHA256 signed with `callback_secret`, retry with exponential backoff, idempotent delivery ID |
 | Webhook relay | E2E encrypted, auto-generated webhook token, payload size limited (64 KB default) |
@@ -435,9 +440,11 @@ LinkAuth is built on established IETF standards:
 
 ### Emerging IETF Drafts (AI Agent Authorization)
 
-The IETF is actively working on standards for AI agent authentication -- LinkAuth aligns with these emerging specifications:
+The IETF is actively working on standards for AI agent authentication and credential management. LinkAuth aligns with these emerging specifications:
 
-- **draft-klrc-aiagent-auth** (2026-03) -- AI Agent Authentication and Authorization. Authors from AWS, Zscaler, Ping Identity. Builds on the WIMSE framework.
+- **draft-klrc-aiagent-auth** (2026-03) -- AI Agent Authentication and Authorization. Builds on the WIMSE framework. LinkAuth addresses the credential delivery gap acknowledged in this draft.
+- **draft-hartman-credential-broker-4-agents** (2026-03) -- Credential Broker for Agents (CB4A). Enterprise credential vaulting architecture. LinkAuth is complementary: it addresses the initial user-to-agent credential handoff rather than ongoing credential management.
+- **draft-levy-wimse-headless-jwt-authentication** (2026) -- Headless JWT Authentication. Addresses workload-to-service authentication. LinkAuth addresses the prior step: how the workload obtains credentials in the first place.
 - **draft-rosenberg-oauth-aauth** -- AAuth: Agentic Authorization OAuth 2.1 Extension
 
 ## Architecture
@@ -501,14 +508,13 @@ proxy:
 
 ## IETF Standardization
 
-LinkAuth is not just a product -- it aims to contribute to the emerging standards for AI agent authorization.
+LinkAuth aims to contribute to the emerging standards for AI agent authorization. An Internet-Draft is in preparation:
 
-1. **Participate** -- Join the [OAuth Working Group](https://datatracker.ietf.org/wg/oauth/about/) mailing list and contribute to the active AI agent authorization drafts
-2. **Demonstrate** -- Present LinkAuth as running code at an [IETF Hackathon](https://www.ietf.org/how/runningcode/hackathons/)
-3. **Formalize** -- Submit an Internet-Draft: *"Zero-Knowledge Credential Brokering for Autonomous Agents"*
-4. **Standardize** -- Work toward WG adoption within the OAuth or GNAP working groups
+- **draft-gerst-linkauth-credential-transfer-00** -- *"LinkAuth: Credential Transfer Protocol for Callback-Constrained Agents"*. Specifies the core protocol, encryption scheme, session lifecycle, and security considerations including the honest-but-curious broker trust model and credential misbinding threat analysis.
 
-The IETF values *running code and rough consensus* ([RFC 7282](https://datatracker.ietf.org/doc/html/rfc7282)). A working implementation is the strongest argument for a protocol proposal.
+The draft is positioned as complementary to existing WIMSE working group deliverables and will be discussed on the [WIMSE mailing list](https://mailarchive.ietf.org/arch/browse/wimse/). A live demonstration is planned for the [IETF 126 Hackathon](https://www.ietf.org/meeting/hackathons/126-hackathon/) in Vienna (July 2026).
+
+The IETF values *running code and rough consensus* ([RFC 7282](https://datatracker.ietf.org/doc/html/rfc7282)). This repository serves as the reference implementation.
 
 ## Status
 
