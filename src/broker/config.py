@@ -32,6 +32,7 @@ class SessionsConfig:
     cleanup_interval: int = 60
     code_length: int = 8
     poll_interval: int = 5  # RFC 8628: recommended polling interval in seconds
+    max_webhook_payload: int = 65536
 
 
 @dataclass
@@ -46,6 +47,16 @@ class LoggingConfig:
     json_file: str = "./logs/linkauth.jsonl"
     max_bytes: int = 10_485_760  # 10 MB
     backup_count: int = 5
+
+
+@dataclass
+class ProxyConfig:
+    """Configuration for the generic HTTP proxy endpoint."""
+    enabled: bool = True
+    allowed_domains: list[str] = field(default_factory=list)
+    max_timeout: int = 60
+    default_timeout: int = 30
+    allow_private_ips: bool = False
 
 
 @dataclass
@@ -75,6 +86,7 @@ class AppConfig:
     security: SecurityConfig = field(default_factory=SecurityConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     rate_limit: RateLimitConfig = field(default_factory=RateLimitConfig)
+    proxy: ProxyConfig = field(default_factory=ProxyConfig)
     oauth_providers: dict[str, OAuthProviderConfig] = field(default_factory=dict)
 
 
@@ -93,6 +105,7 @@ def load_config(path: str = "config.yaml") -> AppConfig:
     security_raw = raw.get("security", {})
     logging_raw = raw.get("logging", {})
     rate_limit_raw = raw.get("rate_limit", {})
+    proxy_raw = raw.get("proxy", {})
 
     sqlite_raw = storage_raw.get("sqlite", {})
 
@@ -136,6 +149,14 @@ def load_config(path: str = "config.yaml") -> AppConfig:
     if env_log_file:
         logging_raw["json_file"] = env_log_file
 
+    proxy_config = ProxyConfig(
+        enabled=proxy_raw.get("enabled", True),
+        allowed_domains=proxy_raw.get("allowed_domains", []),
+        max_timeout=proxy_raw.get("max_timeout", 60),
+        default_timeout=proxy_raw.get("default_timeout", 30),
+        allow_private_ips=proxy_raw.get("allow_private_ips", False),
+    )
+
     return AppConfig(
         server=ServerConfig(**server_raw),
         storage=StorageConfig(
@@ -146,5 +167,6 @@ def load_config(path: str = "config.yaml") -> AppConfig:
         security=SecurityConfig(api_keys=all_api_keys),
         logging=LoggingConfig(**logging_raw),
         rate_limit=RateLimitConfig(**rate_limit_raw),
+        proxy=proxy_config,
         oauth_providers=oauth_providers,
     )

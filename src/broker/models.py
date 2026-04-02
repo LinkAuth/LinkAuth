@@ -72,6 +72,16 @@ class Session:
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     expires_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     consumed_at: datetime | None = None
+    # Passthrough redirect: custom authorize URL + expected callback params
+    custom_authorize_url: str | None = None
+    custom_callback_params: list[str] | None = None
+    custom_state: str | None = None
+    # OAuth state persistence (PKCE code_verifier, moved from in-memory dict)
+    oauth_code_verifier: str | None = None
+    # Callback authentication
+    callback_secret: str | None = None
+    # Ephemeral webhook relay
+    webhook_token: str | None = None
 
     @staticmethod
     def generate_code(length: int = 8) -> str:
@@ -89,3 +99,11 @@ class Session:
     @staticmethod
     def generate_poll_token() -> str:
         return f"pt_{secrets.token_urlsafe(32)}"
+
+    @staticmethod
+    def generate_webhook_token() -> str:
+        return f"wt_{secrets.token_urlsafe(32)}"
+
+    @staticmethod
+    def generate_callback_secret() -> str:
+        return f"cs_{secrets.token_urlsafe(32)}"

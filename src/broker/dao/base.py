@@ -50,6 +50,18 @@ class SessionDAO(ABC):
         """Initialize storage (create tables, etc.)."""
 
     @abstractmethod
+    async def store_oauth_state(self, session_id: str, code_verifier: str) -> bool:
+        """Persist PKCE code_verifier on the session for OAuth callback lookup."""
+
+    @abstractmethod
+    async def clear_oauth_state(self, session_id: str) -> bool:
+        """Clear oauth_code_verifier (pop semantics, prevents replay)."""
+
+    @abstractmethod
+    async def get_by_custom_state(self, custom_state: str) -> Session | None:
+        """Find a passthrough session by its custom_state value."""
+
+    @abstractmethod
     async def close(self) -> None:
         """Clean up resources (close connections, etc.)."""
 

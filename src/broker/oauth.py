@@ -68,13 +68,6 @@ class ResolvedProvider:
     server_metadata_url: str | None = None
 
 
-@dataclass
-class OAuthSession:
-    """Tracks OAuth state for a LinkAuth session (PKCE + state)."""
-    code_verifier: str
-    state: str  # maps back to the LinkAuth session_id
-
-
 def _discover_oidc_endpoints(issuer: str) -> dict[str, str]:
     """Fetch OIDC Discovery document from issuer.
 

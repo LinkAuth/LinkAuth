@@ -1,8 +1,22 @@
 # LinkAuth
 
-> A zero-knowledge credential broker for autonomous AI agents.
+> The secure way for AI agents to request user credentials, without custom web portals, OAuth callback plumbing, or plaintext secrets.
 
-AI agents need credentials (OAuth tokens, API keys, passwords) to access external services on behalf of users. Current solutions require callback endpoints, vendor lock-in, or manual setup. LinkAuth solves this with a Device-Flow-inspired UX and zero-knowledge architecture.
+
+## Why LinkAuth?
+
+If you're building AI agents for other users, you've probably hit the same wall I did: **How do you securely get the user's credentials to the agent?**
+
+Right now, there is no standard way to do this. Everyone is forced to reinvent the wheel. You end up building restrictive web apps just to box your agents in, writing fragile OAuth tunnel hacks, or worst of all resorting to storing user credentials in plaintext somewhere in your database. 
+It's a security nightmare and a massive waste of development time.
+
+**Why not have one central solution that makes your AI agents genuinely useful to *any* user, without ever compromising on security?**
+
+But the problem goes even deeper. Modern agents are built from composable **Skills** and those Skills need credentials too. A Gmail Skill needs a Google OAuth token. A Salesforce Skill needs API access. How do you securely route those credentials to the right skill at the right time?
+**LinkAuth is that missing piece.** 
+It's a standalone credential broker with a Device-Flow-inspired UX, hybrid encryption, and a true zero-knowledge architecture. Your agents ask for access, your users approve it, and the credentials flow directly to the agent - encrypted end-to-end. 
+You never see the plaintext credentials, and you never have to build another custom OAuth flow again.
+
 
 ## How It Works
 
@@ -167,14 +181,156 @@ curl http://localhost:8080/v1/sessions/a1b2c3d4... \
 ```
 
 **Option B -- Callback:**
-If `callback_url` was provided, the broker POSTs to that URL when the session completes:
+If `callback_url` was provided, the broker POSTs to that URL when the session completes. The response to `POST /sessions` includes a `callback_secret` for verifying the signature.
+
 ```json
 {
   "session_id": "a1b2c3d4...",
   "status": "ready",
-  "ciphertext": "<base64-encoded encrypted payload>"
+  "ciphertext": "<base64-encoded encrypted payload>",
+  "algorithm": "RSA-OAEP-256+AES-256-GCM"
 }
 ```
+
+The callback includes authentication headers:
+- `X-LinkAuth-Signature: sha256=<hmac>` -- HMAC-SHA256 over the JSON body, keyed with `callback_secret`
+- `X-LinkAuth-Delivery-Id: <uuid>` -- idempotent delivery identifier (same across retries)
+
+Delivery is retried up to 3 times with exponential backoff (1s, 4s) on 5xx errors. Non-5xx errors are not retried. `callback_url` must use HTTPS (HTTP is allowed only for `localhost`).
+
+### HTTP Proxy for Sandboxed Agents
+
+Agents running in sandboxed environments (Docker, CLI, serverless) often cannot make direct outbound HTTP calls or receive callbacks. The broker provides a generic HTTP proxy endpoint that lets agents route arbitrary requests through the broker.
+
+```bash
+curl -X POST http://localhost:8080/v1/proxy \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <your-api-key>" \
+  -d '{
+    "method": "POST",
+    "url": "https://accounts.google.com/o/oauth2/token",
+    "headers": { "Authorization": "Bearer <token>" },
+    "body": "{\"grant_type\": \"refresh_token\", \"refresh_token\": \"...\"}",
+    "timeout": 30
+  }'
+```
+
+Response:
+```json
+{
+  "status_code": 200,
+  "headers": { "content-type": "application/json" },
+  "body": "{\"access_token\": \"ya29...\", \"expires_in\": 3600}"
+}
+```
+
+The proxy is provider-agnostic -- any outbound HTTP call the agent cannot make directly can be routed through it:
+
+| Use Case | Method | Target |
+|----------|--------|--------|
+| **Auth0 Connected Accounts** | `POST` | `/me/v1/connected-accounts/connect` |
+| **Microsoft Entra OBO** | `POST` | Token endpoint with `grant_type=urn:ietf:params:oauth:grant-type:jwt-bearer` |
+| **Salesforce JWT Bearer** | `POST` | Token endpoint with signed JWT assertion |
+| **Token Refresh** | `POST` | Any OAuth token endpoint with `grant_type=refresh_token` |
+| **Webhook Registration** | `POST` | External API to register a callback URL |
+
+An optional domain allowlist restricts which hosts the proxy can reach:
+
+```yaml
+proxy:
+  enabled: true
+  allowed_domains:
+    - "*.auth0.com"
+    - "login.microsoftonline.com"
+    - "accounts.google.com"
+    - "login.salesforce.com"
+```
+
+An empty list means all domains are allowed (suitable for trusted single-tenant deployments).
+
+#### SSRF Protection
+
+The proxy uses [drawbridge](https://github.com/tachyon-oss/drawbridge) for transport-layer SSRF protection. DNS resolution is performed once and the resulting IP is pinned for the connection, eliminating the validate-then-fetch gap that enables DNS rebinding attacks.
+
+- **Private IPs blocked by default** -- requests to `127.0.0.1`, `10.x.x.x`, `169.254.x.x`, etc. are rejected
+- **No redirect following** -- `max_redirects=0` prevents open-redirect chains into internal networks
+- **Configurable** -- set `proxy.allow_private_ips: true` in `config.yaml` for local development
+
+### Webhook Relay (Ephemeral)
+
+Some workflows require external services to push events *to* the agent (e.g. a Stripe payment confirmation or an OAuth callback from Auth0 Connected Accounts). Agents in sandboxed environments have no public URL to receive these events.
+
+The webhook relay gives each session a short-lived inbound endpoint that external services can POST to. The payload is encrypted with the agent's public key and stored for retrieval via polling.
+
+**Scope:** This is an *ephemeral* relay — it shares the session's TTL (max 15 minutes) and is designed for short-lived callback flows, not long-lived webhook subscriptions.
+
+#### Full Workflow Example
+
+**Step 1 — Agent creates a session with webhook enabled:**
+```bash
+curl -X POST http://localhost:8080/v1/sessions \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: <your-api-key>" \
+  -d '{
+    "public_key": "<base64-encoded RSA public key>",
+    "template": "custom",
+    "display_name": "Stripe Payment",
+    "fields": [{ "name": "status", "label": "Status", "type": "text" }],
+    "enable_webhook": true
+  }'
+```
+
+Response includes `webhook_url`:
+```json
+{
+  "session_id": "a1b2c3d4...",
+  "code": "ABCD-1234",
+  "url": "http://localhost:8080/connect/ABCD-1234",
+  "poll_token": "pt_...",
+  "webhook_url": "http://localhost:8080/v1/sessions/a1b2c3d4.../webhook?token=wt_...",
+  "expires_at": "2026-03-27T12:15:00Z"
+}
+```
+
+**Step 2 — Agent registers the webhook URL with a third-party service** (via the proxy if needed):
+```bash
+curl -X POST http://localhost:8080/v1/proxy \
+  -H "X-API-Key: <your-api-key>" \
+  -d '{
+    "method": "POST",
+    "url": "https://api.stripe.com/v1/webhook_endpoints",
+    "headers": { "Authorization": "Bearer sk_..." },
+    "body": "{\"url\": \"http://localhost:8080/v1/sessions/a1b2c3d4.../webhook?token=wt_...\", \"enabled_events\": [\"payment_intent.succeeded\"]}"
+  }'
+```
+
+**Step 3 — External service POSTs to the webhook URL:**
+```bash
+# Stripe (or any external service) sends the event:
+curl -X POST "http://localhost:8080/v1/sessions/a1b2c3d4.../webhook?token=wt_..." \
+  -H "Content-Type: application/json" \
+  -d '{"type": "payment_intent.succeeded", "data": {"id": "pi_123"}}'
+```
+
+The broker encrypts the payload with the agent's public key and stores it.
+
+**Step 4 — Agent polls for the result:**
+```bash
+curl http://localhost:8080/v1/sessions/a1b2c3d4... \
+  -H "Authorization: Bearer pt_..."
+```
+
+Returns the encrypted webhook payload, which the agent decrypts locally.
+
+#### Security
+
+- **Auto-generated token** -- The `webhook_token` (prefixed `wt_`) is generated by the broker and included in the URL. It is never transmitted separately.
+- **Constant-time comparison** -- Token validation uses `hmac.compare_digest` to prevent timing attacks.
+- **Payload size limit** -- Default 64 KB (`sessions.max_webhook_payload` in config). Returns 413 if exceeded.
+- **E2E encryption** -- Webhook payloads are encrypted with the agent's public key before storage.
+- **Ephemeral** -- The endpoint expires with the session (max 15 min TTL).
+
+> **Note:** For long-lived webhook subscriptions with persistent storage, a separate Webhook Inbox feature is planned for a future release.
 
 ## Credential Templates
 
@@ -237,6 +393,9 @@ This allows arbitrarily large payloads (OAuth tokens, certificates, etc.) while 
 | One-time use | Credentials retrieved once, then deleted |
 | Polling is authenticated | `poll_token` required to retrieve session results |
 | Rate-limited | Session creation is rate-limited per IP / API key |
+| Proxy SSRF protection | DNS pinned at transport layer via drawbridge, private IPs blocked by default |
+| Callback authentication | HMAC-SHA256 signed with `callback_secret`, retry with exponential backoff, idempotent delivery ID |
+| Webhook relay | E2E encrypted, auto-generated webhook token, payload size limited (64 KB default) |
 
 > **OAuth Caveat:** When the broker handles OAuth flows (Google, GitHub, etc.), it acts as the OAuth confidential client. The broker briefly sees the OAuth tokens in memory before encrypting them. This is an inherent limitation of OAuth -- the broker is trusted for OAuth flows but zero-knowledge for direct credential input.
 
@@ -332,6 +491,12 @@ sessions:
   default_ttl: 600                     # session lifetime in seconds
   max_ttl: 900
   cleanup_interval: 60                 # expired session cleanup interval
+
+proxy:
+  enabled: true                        # HTTP proxy for sandboxed agents
+  allowed_domains: []                  # empty = allow all (single-tenant)
+  default_timeout: 30
+  max_timeout: 60
 ```
 
 ## IETF Standardization

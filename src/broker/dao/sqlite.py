@@ -29,7 +29,13 @@ CREATE TABLE IF NOT EXISTS sessions (
     algorithm    TEXT,
     created_at   TEXT NOT NULL,
     expires_at   TEXT NOT NULL,
-    consumed_at  TEXT
+    consumed_at  TEXT,
+    custom_authorize_url TEXT,
+    custom_callback_params TEXT,
+    custom_state TEXT,
+    oauth_code_verifier TEXT,
+    callback_secret TEXT,
+    webhook_token TEXT
 );
 """
 
@@ -83,6 +89,8 @@ def _json_to_template(raw: str) -> CredentialTemplate:
 
 
 def _row_to_session(row: aiosqlite.Row) -> Session:
+    cb_params_raw = row["custom_callback_params"]
+    cb_params = json.loads(cb_params_raw) if cb_params_raw else None
     return Session(
         session_id=row["session_id"],
         code=row["code"],
@@ -97,6 +105,12 @@ def _row_to_session(row: aiosqlite.Row) -> Session:
         created_at=_str_to_dt(row["created_at"]),
         expires_at=_str_to_dt(row["expires_at"]),
         consumed_at=_str_to_dt(row["consumed_at"]) if row["consumed_at"] else None,
+        custom_authorize_url=row["custom_authorize_url"],
+        custom_callback_params=cb_params,
+        custom_state=row["custom_state"],
+        oauth_code_verifier=row["oauth_code_verifier"],
+        callback_secret=row["callback_secret"],
+        webhook_token=row["webhook_token"],
     )
 
 
@@ -110,6 +124,19 @@ class SqliteSessionDAO(SessionDAO):
         self._db = await aiosqlite.connect(self._db_path)
         self._db.row_factory = aiosqlite.Row
         await self._db.execute(_CREATE_SESSIONS)
+        _MIGRATIONS = (
+            "custom_authorize_url TEXT",
+            "custom_callback_params TEXT",
+            "custom_state TEXT",
+            "oauth_code_verifier TEXT",
+            "callback_secret TEXT",
+            "webhook_token TEXT",
+        )
+        for col in _MIGRATIONS:
+            try:
+                await self._db.execute(f"ALTER TABLE sessions ADD COLUMN {col}")
+            except Exception:
+                pass  # column already exists
         await self._db.commit()
 
     async def close(self) -> None:
@@ -122,12 +149,19 @@ class SqliteSessionDAO(SessionDAO):
         return self._db
 
     async def create(self, session: Session) -> None:
+        cb_params_json = (
+            json.dumps(session.custom_callback_params)
+            if session.custom_callback_params
+            else None
+        )
         await self.db.execute(
             """INSERT INTO sessions
                (session_id, code, public_key, template_json, status,
                 poll_token, connect_token, callback_url, ciphertext, algorithm,
-                created_at, expires_at, consumed_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                created_at, expires_at, consumed_at,
+                custom_authorize_url, custom_callback_params, custom_state,
+                oauth_code_verifier, callback_secret, webhook_token)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 session.session_id,
                 session.code,
@@ -142,6 +176,12 @@ class SqliteSessionDAO(SessionDAO):
                 _dt_to_str(session.created_at),
                 _dt_to_str(session.expires_at),
                 _dt_to_str(session.consumed_at) if session.consumed_at else None,
+                session.custom_authorize_url,
+                cb_params_json,
+                session.custom_state,
+                session.oauth_code_verifier,
+                session.callback_secret,
+                session.webhook_token,
             ),
         )
         await self.db.commit()
@@ -181,7 +221,7 @@ class SqliteSessionDAO(SessionDAO):
         cursor = await self.db.execute(
             """UPDATE sessions
                SET ciphertext = ?, algorithm = ?, status = ?
-               WHERE session_id = ? AND status IN (?, ?)""",
+               WHERE session_id = ? AND status IN (?, ?, ?)""",
             (
                 ciphertext,
                 algorithm,
@@ -189,6 +229,7 @@ class SqliteSessionDAO(SessionDAO):
                 session_id,
                 SessionStatus.PENDING.value,
                 SessionStatus.CONFIRMED.value,
+                SessionStatus.READY.value,
             ),
         )
         await self.db.commit()
@@ -222,6 +263,35 @@ class SqliteSessionDAO(SessionDAO):
         )
         await self.db.commit()
         return cursor.rowcount
+
+    async def store_oauth_state(self, session_id: str, code_verifier: str) -> bool:
+        cursor = await self.db.execute(
+            "UPDATE sessions SET oauth_code_verifier = ? WHERE session_id = ?",
+            (code_verifier, session_id),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def clear_oauth_state(self, session_id: str) -> bool:
+        cursor = await self.db.execute(
+            "UPDATE sessions SET oauth_code_verifier = NULL WHERE session_id = ?",
+            (session_id,),
+        )
+        await self.db.commit()
+        return cursor.rowcount > 0
+
+    async def get_by_custom_state(self, custom_state: str) -> Session | None:
+        cursor = await self.db.execute(
+            """SELECT * FROM sessions
+               WHERE custom_state = ?
+                 AND custom_authorize_url IS NOT NULL
+                 AND oauth_code_verifier IS NOT NULL
+                 AND expires_at > ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (custom_state, _dt_to_str(datetime.now(timezone.utc))),
+        )
+        row = await cursor.fetchone()
+        return _row_to_session(row) if row else None
 
 
 class SqliteTemplateDAO(TemplateDAO):
